@@ -1,0 +1,2577 @@
+import { rand, randomState, seedRandom } from './rand';
+import { SPECIAL_KINDS, type Kind } from '../art/buildings';
+import { BASE_SEA, Cover, H, HILL_MAX, STEP, TICK, TICK_STEPS, W, YEAR, idx, roadTier } from '../world/constants';
+import type { Command } from './commands';
+import { World } from '../world/World';
+import { ACHIEVEMENTS } from './achievements';
+import { Animal, AnimalSystem } from './Animals';
+import { type Culture, type Terrain, cultureById, cultureForTerrain, surveyTerrain } from './cultures';
+import { ERAS, MAX_ERA } from './eras';
+import { Grid } from './Grid';
+
+export type Action =
+  | 'idle'
+  | 'wander'
+  | 'flee'
+  | 'swim'
+  | 'rest'
+  | 'huddle'
+  | 'eat'
+  | 'harvest'
+  | 'hunt'
+  | 'farm'
+  | 'chop'
+  | 'build'
+  | 'deliver'
+  | 'migrate'
+  | 'fight'
+  | 'march'
+  | 'raid'
+  | 'retreat'
+  | 'pray';
+
+export const ACTION_LABEL: Record<Action, string> = {
+  idle: 'Nghỉ ngơi',
+  wander: 'Đi dạo',
+  flee: 'Chạy trốn',
+  swim: 'Bơi vào bờ',
+  rest: 'Ở trong nhà',
+  huddle: 'Co ro ngoài trời',
+  eat: 'Đi ăn',
+  harvest: 'Kiếm thức ăn',
+  hunt: 'Đi săn',
+  farm: 'Khai hoang ruộng',
+  chop: 'Đốn gỗ',
+  build: 'Xây nhà',
+  deliver: 'Chở đồ về làng',
+  migrate: 'Di cư',
+  fight: 'Chiến đấu',
+  march: 'Hành quân',
+  raid: 'Tấn công làng địch',
+  retreat: 'Rút lui',
+  pray: 'Cầu nguyện',
+};
+
+export type WishKind =
+  | 'rain'
+  | 'sun'
+  | 'warmth'
+  | 'harvest'
+  | 'fertility'
+  | 'victory'
+  | 'peace'
+  | 'game'
+  | 'forest'
+  | 'knowledge'
+  | 'smite';
+
+export interface Wish {
+  id: number;
+  village: number;
+  /** The god this prayer is addressed to. */
+  god: number;
+  kind: WishKind;
+  text: string;
+  reason: string;
+  expires: number;
+  target: number;
+}
+
+export interface HistoryEntry {
+  year: number;
+  text: string;
+}
+
+export interface LogEntry {
+  year: number;
+  msg: string;
+}
+
+export interface Toast {
+  icon: string;
+  title: string;
+  text: string;
+}
+
+export interface Milestone {
+  year: number;
+  icon: string;
+  title: string;
+  desc: string;
+}
+
+const OFFSETS = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3];
+const MAX_POP = 8000;
+
+/** Civic buildings a nation raises as it develops, with the era each unlocks in. */
+const SPECIALS: { kind: Kind; era: number; per: number }[] = [
+  { kind: 'granary', era: 1, per: 25 },
+  { kind: 'dock', era: 1, per: 0 },
+  { kind: 'market', era: 2, per: 40 },
+  { kind: 'smithy', era: 2, per: 0 },
+  { kind: 'barracks', era: 3, per: 0 },
+  { kind: 'mill', era: 3, per: 40 },
+  { kind: 'library', era: 3, per: 0 },
+  { kind: 'factory', era: 4, per: 50 },
+  { kind: 'school', era: 4, per: 0 },
+  { kind: 'hospital', era: 5, per: 0 },
+  { kind: 'office', era: 5, per: 40 },
+  { kind: 'spaceport', era: 6, per: 0 },
+];
+export const SPECIAL_LABEL: Record<Kind, string> = {
+  house: '🏠 Nhà ở',
+  granary: '🌾 Kho lúa',
+  market: '🏪 Chợ',
+  smithy: '⚒️ Lò rèn',
+  barracks: '🛡️ Doanh trại',
+  mill: '⚙️ Cối xay',
+  library: '📚 Thư viện',
+  factory: '🏭 Nhà máy',
+  school: '🏫 Trường học',
+  hospital: '🏥 Bệnh viện',
+  office: '🏢 Cao ốc',
+  dock: '⚓ Bến thuyền',
+  spaceport: '🚀 Sân bay vũ trụ',
+};
+const kindIndex = (k: Kind) => SPECIAL_KINDS.indexOf(k);
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+const ADULT = 16 * YEAR;
+const CLAIMED = new Set<Action>(['harvest', 'farm', 'chop', 'build']);
+
+type FoodKind = 'farm' | 'forest' | 'fish';
+const FOOD_THOUGHT: Record<FoodKind, string> = {
+  farm: 'Đi gặt lúa',
+  forest: 'Vào rừng hái quả',
+  fish: 'Ra bờ nước câu cá',
+};
+
+const pick = <T>(arr: T[]) => arr[Math.floor(rand() * arr.length)];
+const cx = (i: number) => i % W;
+const cy = (i: number) => Math.floor(i / W);
+const clampX = (v: number) => Math.max(0, Math.min(W - 1, Math.round(v)));
+const clampY = (v: number) => Math.max(0, Math.min(H - 1, Math.round(v)));
+
+interface Jobs {
+  ripe: number[];
+  farmSites: number[];
+  houseSites: number[];
+  trees: number[];
+  firebreak: number[];
+  fish: number[];
+}
+
+export class Village {
+  id: number;
+  base: string;
+  culture: Culture;
+  color: number;
+  cx: number;
+  cy: number;
+  founder: string;
+  foundYear: number;
+  parentName: string;
+  terrain: Terrain;
+  houses = new Set<number>();
+  farms = new Set<number>();
+  /** Civic buildings: cell → kind index. */
+  buildings = new Map<number, number>();
+  partners = new Set<number>();
+  /** Foreign cultural influence, 0..100 per culture id. */
+  influences = new Map<string, number>();
+  food = 6;
+  wood = 3;
+  pop = 0;
+  adults = 0;
+  // Disasters lived through — and what they learned.
+  floods = 0;
+  fires = 0;
+  winters = 0;
+  strikes = 0;
+  quakes = 0;
+  minBuildHeight: number;
+  foodPerPerson = 2;
+  fireWary = false;
+  stormWary = false;
+  inWinter = false;
+  alive = true;
+  birthTimer = 10;
+  // Progress
+  era = 0;
+  tech = 0;
+  // Faith in the player
+  /** Faith in each god (0..100). */
+  faiths = [15, 15];
+  /** The god this people worships: -1 = their own ancestral gods. */
+  patron = -1;
+  /** Faith in their patron god (or in whichever god they lean towards). */
+  get faith() {
+    return this.faiths[this.leaning];
+  }
+  get leaning() {
+    return this.patron >= 0 ? this.patron : this.faiths[1] > this.faiths[0] ? 1 : 0;
+  }
+  get religion(): 'native' | 'god' {
+    return this.patron >= 0 ? 'god' : 'native';
+  }
+  addFaith(god: number, d: number) {
+    this.faiths[god] = Math.max(0, Math.min(100, this.faiths[god] + d));
+  }
+  temple = false;
+  ritualTimer = 120 + rand() * 120;
+  praying = 0;
+  wishCooldown = 30 + rand() * 40;
+  blessFertile = 0;
+  blessWar = 0;
+  // Politics
+  opinion = new Map<number, number>();
+  enemies = new Set<number>();
+  kills = 0;
+  losses = 0;
+  annexed = 0;
+  absorbedBy = -1;
+  leaderId = -1;
+  leaderName = '';
+  regnal = new Map<string, number>();
+  history: HistoryEntry[] = [];
+  jobs: Jobs = { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] };
+  jobTimer = 0;
+  colonizeCd = 120;
+
+  constructor(id: number, base: string, culture: Culture, color: number, x: number, y: number, minH: number) {
+    this.id = id;
+    this.base = base;
+    this.culture = culture;
+    this.color = color;
+    this.cx = x;
+    this.cy = y;
+    this.minBuildHeight = minH;
+    this.founder = '';
+    this.foundYear = 0;
+    this.parentName = '';
+    this.terrain = { water: 0, forest: 0, mountain: 0, open: 0, chill: 0, landmass: 0 };
+  }
+
+  get radius() {
+    return ERAS[this.era].radius;
+  }
+  /** Real population this nation stands for (each person on the map represents many). */
+  get people() {
+    return this.pop * ERAS[this.era].popScale;
+  }
+  get cap() {
+    return this.houses.size * ERAS[this.era].houseCap;
+  }
+  count(kind: Kind) {
+    const k = SPECIAL_KINDS.indexOf(kind);
+    let n = 0;
+    for (const v of this.buildings.values()) if (v === k) n++;
+    return n;
+  }
+  has(kind: Kind) {
+    return this.count(kind) > 0;
+  }
+  get title() {
+    if (this.annexed >= 2 && this.era >= 2) return this.culture.id === 'thao_nguyen' ? 'Đế quốc' : 'Đế chế';
+    return this.culture.states[this.era];
+  }
+  get name() {
+    return `${this.title} ${this.base}`;
+  }
+  get ruler() {
+    return this.leaderName ? `${this.culture.rulers[this.era]} ${this.leaderName}` : '';
+  }
+}
+
+export class Human {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  age: number;
+  maxAge: number;
+  culture: string | null = null;
+  origin = '';
+  colonist = false;
+  /** Settlers travelling together share a band; they follow its leader and found one village. */
+  band = -1;
+  leftAt = 0;
+  originId = -1;
+  /** While > world time this person is aboard a ship crossing the sea. */
+  voyageUntil = 0;
+  sailed = false;
+  village = -1;
+  role: 'none' | 'soldier' = 'none';
+  hunger = rand() * 0.3;
+  warmth = 1;
+  health = 1;
+  action: Action = 'idle';
+  thought = '';
+  targetIdx = -1;
+  tx = 0;
+  ty = 0;
+  hasTarget = false;
+  think = rand() * 0.5;
+  work = 0;
+  carryFood = 0;
+  carryWood = 0;
+  turn = rand() < 0.5 ? 1 : -1;
+  stuck = 0;
+  lastDist = Infinity;
+  heading = rand() * Math.PI * 2;
+  inside = false;
+  dead = false;
+  harm = '';
+  avoid = -1;
+  avoidUntil = 0;
+  foe: Human | null = null;
+  prey: Animal | null = null;
+  attackCd = 0;
+  lastHitBy = -1;
+
+  constructor(id: number, name: string, x: number, y: number, age: number) {
+    this.id = id;
+    this.name = name;
+    this.x = x;
+    this.y = y;
+    this.age = age;
+    this.maxAge = (55 + rand() * 30) * YEAR;
+  }
+}
+
+interface War {
+  a: number;
+  b: number;
+  start: number;
+}
+
+export class Sim {
+  world = new World();
+  animals = new AnimalSystem(this.world);
+  humans: Human[] = [];
+  villages: Village[] = [];
+  wars: War[] = [];
+  wishes: Wish[] = [];
+  /** The two gods' names; god 1 only acts in multiplayer. */
+  godNames = ['Đấng Sáng Thế', 'Đấng Hắc Nguyệt'];
+  /** How many gods the world has known (1 alone, 2 once a second god has joined). */
+  gods = 1;
+  /** While two gods are connected, each answers only the prayers addressed to them. */
+  strictGods = false;
+  /** Who acted last (for attributing disasters). */
+  private actor = 0;
+  get godName() {
+    return this.godNames[this.me];
+  }
+  set godName(n: string) {
+    this.godNames[this.me] = n;
+  }
+  /** Name of the god a people worships or leans towards. */
+  deityOf(v: Village) {
+    return this.godNames[v.leaning];
+  }
+  speed = 1;
+  paused = false;
+  /** Increments on every new world so the renderer knows to redraw everything. */
+  generation = 0;
+  strikes: { x: number; y: number; t: number }[] = [];
+  shots: { x1: number; y1: number; x2: number; y2: number; t: number }[] = [];
+  clashes: { x: number; y: number; t: number }[] = [];
+  impacts: { x: number; y: number; r: number; kind: string; t: number }[] = [];
+  voyages: { x1: number; y1: number; x2: number; y2: number; start: number; end: number; color: number; era: number }[] = [];
+  shake = 0;
+  log: LogEntry[] = [];
+  toasts: Toast[] = [];
+  milestones: Milestone[] = [];
+  achieved = new Map<string, number>();
+  stats = {
+    wars: 0,
+    treaties: 0,
+    annexations: 0,
+    hunted: 0,
+    wolfKills: 0,
+    volcanoes: 0,
+    meteors: 0,
+    quakes: 0,
+    extinctions: 0,
+    wishesGranted: 0,
+    wishesDenied: 0,
+    apostasies: 0,
+    voyages: 0,
+    unions: 0,
+    exchanges: 0,
+    births: 0,
+    deaths: 0,
+  };
+  selectedHuman: Human | null = null;
+  selectedVillage: Village | null = null;
+  humanGrid = new Grid<Human>();
+
+  private acc = 0;
+  private nextId = 1;
+  private wishId = 1;
+  private startTime = 0;
+  private deaths = new Map<string, number>();
+  private births = 0;
+  private summaryTimer = 0;
+  private slowTimer = 0;
+  private throttle = new Map<string, number>();
+  private claims = new Map<number, Human>();
+  private byId = new Map<number, Human>();
+  private nextBand = 1;
+  private bandLeaders = new Map<number, Human>();
+  private bandSizes = new Map<number, number>();
+
+  constructor() {
+    this.animals.onHumanBitten = (p) => {
+      const h = p as Human;
+      if (h.health <= 0) this.stats.wolfKills++;
+      else if (h.action !== 'fight' && h.age >= ADULT) {
+        h.thought = 'Sói tấn công! Đánh trả!';
+      }
+    };
+  }
+
+  get year() {
+    return Math.floor((this.world.time - this.startTime) / YEAR) + 1;
+  }
+
+  say(msg: string, key?: string, cooldown = 25) {
+    if (key) {
+      const last = this.throttle.get(key);
+      if (last !== undefined && this.world.time - last < cooldown) return;
+      this.throttle.set(key, this.world.time);
+    }
+    this.log.unshift({ year: this.year, msg });
+    if (this.log.length > 120) this.log.pop();
+  }
+
+  /** Record an event in a village's own history (and optionally the world chronicle). */
+  chronicle(v: Village, text: string, global = true) {
+    v.history.push({ year: this.year, text });
+    if (v.history.length > 60) v.history.splice(1, 1); // keep the founding entry
+    if (global) this.say(text);
+  }
+
+  /** Seed of the current world (multiplayer peers generate the same world from it). */
+  seed = 0;
+
+  newWorld(seed = Date.now() % 2147483647) {
+    this.generation++;
+    this.seed = seed;
+    seedRandom(seed);
+    // Every counter that influences decisions starts from scratch, so the same seed replays exactly.
+    this.stepNo = 0;
+    this.pending.clear();
+    this.acc = 0;
+    this.nextId = 1;
+    this.wishId = 1;
+    this.nextBand = 1;
+    this.slowTimer = 0;
+    this.summaryTimer = 0;
+    this.births = 0;
+    this.deaths.clear();
+    this.voyages = [];
+    this.wars = [];
+    this.warFrom = null;
+    this.world.generate(seed);
+    this.startTime = this.world.time;
+    this.humans = [];
+    this.villages = [];
+    this.wars = [];
+    this.wishes = [];
+    this.strikes = [];
+    this.log = [];
+    this.toasts = [];
+    this.milestones = [];
+    this.achieved.clear();
+    for (const k of Object.keys(this.stats)) this.stats[k as keyof typeof this.stats] = 0;
+    this.throttle.clear();
+    this.claims.clear();
+    this.byId.clear();
+    this.selectedHuman = null;
+    this.selectedVillage = null;
+    this.animals.reset();
+    this.animals.populate(1400, 200);
+    this.say('🌍 Một thế giới mới vừa được tạo ra. Những nhóm người du mục đầu tiên đang tìm đất lành...');
+    // Each great island gets its own clans; the islets wait to be discovered by sea.
+    const isl = this.world.islands;
+    for (let g = 0; g < Math.max(24, isl.length * 5); g++) {
+      const home = isl[g % isl.length];
+      let site = -1;
+      for (let t = 0; t < 600 && site < 0 && home; t++) {
+        const a = rand() * Math.PI * 2;
+        const d = rand() * home.r * 0.6;
+        const x = Math.round(home.x + Math.cos(a) * d);
+        const y = Math.round(home.y + Math.sin(a) * d);
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        if (this.goodSite(idx(x, y))) site = idx(x, y);
+      }
+      if (site < 0) continue;
+      for (let k = 0; k < 6; k++) {
+        const j = this.world.findNearest(cx(site) + rand() * 4 - 2, cy(site) + rand() * 4 - 2, 5, (c) =>
+          this.world.canWalk(c),
+        );
+        if (j >= 0) this.spawnHuman(cx(j) + 0.5, cy(j) + 0.5);
+      }
+    }
+  }
+
+  spawnHuman(x: number, y: number, village = -1, child = false) {
+    if (this.humans.length >= MAX_POP) return null;
+    const v = village >= 0 ? this.villages[village] : null;
+    const names = v ? v.culture.names : ['Ka', 'Mo', 'Ra', 'Tu', 'Na', 'Le', 'Bo', 'Ki', 'Su', 'Da'];
+    const h = new Human(this.nextId++, pick(names), x, y, child ? 0 : (18 + rand() * 20) * YEAR);
+    h.village = village;
+    if (v) {
+      h.culture = v.culture.id;
+      h.maxAge *= ERAS[v.era].life;
+    }
+    this.humans.push(h);
+    this.byId.set(h.id, h);
+    return h;
+  }
+
+  spawnAnimal(kind: 'deer' | 'wolf', x: number, y: number) {
+    const i = idx(Math.floor(x), Math.floor(y));
+    if (x < 0 || y < 0 || x >= W || y >= H || !this.world.canWalk(i) || this.world.isWater(i)) return;
+    this.animals.spawn(kind, x, y);
+  }
+
+  // ---------- God powers ----------
+
+  volcano(x: number, y: number) {
+    this.world.volcano(x, y);
+    this.stats.volcanoes++;
+  }
+  quake(x: number, y: number, r: number) {
+    this.world.quake(x, y, r);
+    this.stats.quakes++;
+  }
+  meteor(x: number, y: number, r: number) {
+    this.world.meteor(x, y, r);
+    this.stats.meteors++;
+  }
+
+  /** The nation picked as aggressor with the war tool, waiting for its target. */
+  warFrom: Village | null = null;
+
+  /** War tool: first click picks the aggressor, second click picks the nation it attacks. */
+  incite(x: number, y: number) {
+    const v = this.villageNear(x, y, 14);
+    if (!v) return;
+    if (!this.warFrom?.alive || this.warFrom === v) {
+      this.warFrom = this.warFrom === v ? null : v;
+      if (this.warFrom) this.toasts.push({ icon: '⚔️', title: `Đã chọn ${v.name}`, text: 'Giờ bấm vào nước mà họ sẽ tấn công (Esc để hủy).' });
+      return;
+    }
+    this.issue({ god: this.me, t: 'war', a: this.warFrom.id, b: v.id });
+    this.warFrom = null;
+  }
+
+  warBetween(a: number, b: number) {
+    const A = this.villages[a];
+    const B = this.villages[b];
+    if (!A?.alive || !B?.alive || A === B || A.enemies.has(B.id)) return;
+    this.declareWar(A, B, `vì ${this.godNames[this.actor]} gieo rắc thù hận vào lòng họ`);
+  }
+
+  pacify(x: number, y: number) {
+    const v = this.villageNear(x, y, 12);
+    if (v) this.issue({ god: this.me, t: 'peace', v: v.id });
+  }
+
+  private villageNear(x: number, y: number, r: number) {
+    let best: Village | null = null;
+    let bd = r;
+    for (const v of this.villages) {
+      if (!v.alive) continue;
+      const d = Math.hypot(v.cx - x, v.cy - y);
+      if (d < bd) {
+        bd = d;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  // ---------- Main loop ----------
+
+  // ---------- Lockstep core ----------
+
+  /** Number of fixed steps simulated so far. */
+  stepNo = 0;
+  /** Commands waiting for the step they were scheduled at. */
+  private pending = new Map<number, Command[]>();
+  /** Multiplayer hook: may a step run yet? (Lockstep waits until both gods' orders for it are in.) */
+  gate: ((step: number) => boolean) | null = null;
+  /** Multiplayer hook: where locally issued commands go (default: next step, locally). */
+  sender: ((cmd: Command) => void) | null = null;
+  /** Which god this machine plays (0 or 1). */
+  me = 0;
+
+  /** Issue a god command: scheduled for a future step and applied identically everywhere. */
+  issue(cmd: Command) {
+    if (this.sender) this.sender(cmd);
+    else this.schedule(this.stepNo, [cmd]);
+  }
+
+  schedule(step: number, cmds: Command[]) {
+    const at = Math.max(step, this.stepNo);
+    const list = this.pending.get(at) ?? [];
+    list.push(...cmds);
+    this.pending.set(at, list);
+  }
+
+  /** A cheap fingerprint of the world state, compared between peers to detect desyncs. */
+  checksum() {
+    let h = this.stepNo | 0;
+    const mix = (v: number) => {
+      h = Math.imul(h ^ (v | 0), 16777619);
+    };
+    mix(this.humans.length);
+    for (let k = 0; k < this.humans.length; k += 7) {
+      const p = this.humans[k];
+      mix(p.x * 1000);
+      mix(p.y * 1000);
+      mix(p.id);
+    }
+    for (const v of this.villages) {
+      mix(v.food * 10);
+      mix(v.tech * 10);
+      mix(v.houses.size);
+    }
+    mix(this.animals.list.length);
+    mix(this.world.seaLevel * 1e6);
+    return h >>> 0;
+  }
+
+  private apply(c: Command) {
+    const w = this.world;
+    this.actor = c.god;
+    switch (c.t) {
+      case 'raise':
+        w.raise(c.x, c.y, c.r, c.a);
+        break;
+      case 'smooth':
+        w.smooth(c.x, c.y, c.r, c.k);
+        break;
+      case 'water':
+        w.water(c.x, c.y, c.r);
+        break;
+      case 'forest':
+        w.plantForest(c.x, c.y, c.r);
+        break;
+      case 'fire':
+        w.setFire(c.x, c.y, c.r);
+        break;
+      case 'weather':
+        w.paintWeather(c.x, c.y, c.r, c.w);
+        break;
+      case 'weatherAll':
+        w.autoWeather = false;
+        w.setWeather(c.w);
+        break;
+      case 'autoWeather':
+        w.autoWeather = c.on;
+        break;
+      case 'volcano':
+        this.volcano(c.x, c.y);
+        break;
+      case 'quake':
+        this.quake(c.x, c.y, c.r);
+        break;
+      case 'meteor':
+        this.meteor(c.x, c.y, c.r);
+        break;
+      case 'human': {
+        const i = idx(Math.floor(c.x), Math.floor(c.y));
+        if (c.x >= 0 && c.y >= 0 && c.x < W && c.y < H && w.canWalk(i)) this.spawnHuman(c.x, c.y);
+        break;
+      }
+      case 'animal':
+        this.spawnAnimal(c.kind, c.x, c.y);
+        break;
+      case 'war':
+        this.warBetween(c.a, c.b);
+        break;
+      case 'peace': {
+        const v = this.villages[c.v];
+        if (v) for (const e of [...v.enemies]) this.makePeace(v, this.villages[e], `${this.godNames[c.god]} giáng xuống ý chỉ hòa bình`);
+        break;
+      }
+      case 'wish':
+        this.answerWish(c.id, c.yes, c.god);
+        break;
+      case 'godName':
+        this.godNames[c.god] = c.name;
+        break;
+    }
+  }
+
+  /** Advance the simulation by real time (called from a timer, also when the tab is in the background). */
+  update(realDt: number) {
+    if (this.paused) return;
+    // Catch up after the browser throttled us, but never more than a few seconds of game time at once.
+    this.acc = Math.min(this.acc + Math.min(realDt, 2) * this.speed, STEP * 400);
+    let n = 0;
+    const t0 = performance.now();
+    while (this.acc >= STEP && n < 400 && performance.now() - t0 < 25) {
+      if (this.gate && !this.gate(this.stepNo)) break; // waiting for the other god's orders
+      this.acc -= STEP;
+      this.step();
+      n++;
+    }
+  }
+
+  /** Fade visual effects (lightning, shots...) by render time. */
+  tickVisuals(realDt: number) {
+    for (const s of this.strikes) s.t -= realDt;
+    this.strikes = this.strikes.filter((s) => s.t > 0);
+    this.voyages = this.voyages.filter((v) => v.end > this.world.time);
+    for (const s of this.shots) s.t -= realDt;
+    this.shots = this.shots.filter((s) => s.t > 0);
+    for (const s of this.clashes) s.t -= realDt;
+    this.clashes = this.clashes.filter((s) => s.t > 0);
+    for (const s of this.impacts) s.t -= realDt;
+    this.impacts = this.impacts.filter((s) => s.t > 0);
+    this.shake = Math.max(0, this.shake - realDt);
+  }
+
+  private step() {
+    const cmds = this.pending.get(this.stepNo);
+    if (cmds) {
+      this.pending.delete(this.stepNo);
+      // Same order on every machine: god 0's commands, then god 1's (each in the order issued).
+      cmds.sort((a, b) => a.god - b.god);
+      for (const c of cmds) this.apply(c);
+    }
+    const dt = STEP;
+    if (this.stepNo % TICK_STEPS === 0) {
+      this.world.tick(TICK);
+      this.handleEvents();
+      this.villageTick(TICK);
+      this.slowTimer += TICK;
+      if (this.slowTimer >= 5) {
+        this.slowTimer = 0;
+        this.diplomacyTick();
+        this.checkAchievements();
+      }
+    }
+
+    for (const v of this.villages) {
+      v.pop = 0;
+      v.adults = 0;
+    }
+    this.bandLeaders.clear();
+    this.bandSizes.clear();
+    for (const h of this.humans) {
+      if (h.band >= 0) {
+        const l = this.bandLeaders.get(h.band);
+        if (!l || h.id < l.id) this.bandLeaders.set(h.band, h);
+        this.bandSizes.set(h.band, (this.bandSizes.get(h.band) ?? 0) + 1);
+      }
+      if (h.village < 0) continue;
+      const v = this.villages[h.village];
+      v.pop++;
+      if (h.age >= ADULT) v.adults++;
+    }
+
+    this.humanGrid.rebuild(this.humans);
+    this.animals.update(dt, this.humanGrid, (x, y) => this.inTown(x, y));
+    for (const h of this.humans) if (!h.dead) this.updateHuman(h, dt);
+    for (const h of this.humans) if (h.dead) this.byId.delete(h.id);
+    this.humans = this.humans.filter((h) => !h.dead);
+    if (this.selectedHuman?.dead) this.selectedHuman = null;
+
+    this.summaryTimer += dt;
+    if (this.summaryTimer > 30) {
+      this.summaryTimer = 0;
+      if (this.deaths.size) {
+        const parts = [...this.deaths].map(([cause, n]) => `${n} người ${cause}`);
+        this.say(`💀 ${parts.join(', ')}.`);
+        this.deaths.clear();
+      }
+      if (this.births) {
+        this.say(`👶 ${this.births} em bé chào đời.`);
+        this.births = 0;
+      }
+    }
+    this.stepNo++;
+  }
+
+  private inTown(x: number, y: number) {
+    for (const v of this.villages) if (v.alive && Math.hypot(v.cx - x, v.cy - y) < v.radius * 0.6) return true;
+    return false;
+  }
+
+  private checkAchievements() {
+    for (const a of ACHIEVEMENTS) {
+      if (this.achieved.has(a.id) || !a.check(this)) continue;
+      this.achieved.set(a.id, this.year);
+      this.milestones.push({ year: this.year, icon: a.icon, title: a.title, desc: a.desc });
+      this.toasts.push({ icon: a.icon, title: a.title, text: a.desc });
+      this.say(`🏆 Thành tựu: ${a.icon} ${a.title} — ${a.desc}`);
+    }
+  }
+
+  // ---------- World events → village memory ----------
+
+  private handleEvents() {
+    const w = this.world;
+    for (const e of w.events) {
+      if (e.type === 'lightning') {
+        this.strikes.push({ x: e.x, y: e.y, t: 0.5 });
+        this.humanGrid.each(e.x + 0.5, e.y + 0.5, 1.5, (h) => {
+          if (!h.inside) this.kill(h, 'bị sét đánh');
+        });
+        for (const v of this.villages) {
+          if (!v.alive || Math.hypot(v.cx - e.x, v.cy - e.y) > v.radius + 6) continue;
+          v.strikes++;
+          if (!v.stormWary) {
+            v.stormWary = true;
+            this.chronicle(v, `⚡ Sét đánh gần ${v.name}! Từ đó họ học được: khi có bão phải tránh xa cây cao.`);
+          }
+        }
+        continue;
+      }
+      if (e.type === 'impact') {
+        this.impacts.push({ x: e.x, y: e.y, r: e.r, kind: e.kind, t: e.kind === 'meteor' ? 1.2 : 0.8 });
+        this.shake = e.kind === 'quake' ? 1.2 : 0.6;
+        if (e.kind === 'meteor') {
+          this.humanGrid.each(e.x, e.y, e.r + 1, (h) => this.kill(h, 'chết vì thiên thạch'));
+          for (const a of this.animals.list) if (Math.hypot(a.x - e.x, a.y - e.y) < e.r + 1) a.dead = true;
+        }
+        for (const v of this.villages) {
+          if (!v.alive || Math.hypot(v.cx - e.x, v.cy - e.y) > v.radius + 15) continue;
+          v.addFaith(this.actor, 6);
+          if (e.kind === 'quake') v.quakes++;
+          const what = e.kind === 'meteor' ? 'Lửa trời giáng xuống' : e.kind === 'quake' ? 'Mặt đất rung chuyển dữ dội' : 'Một ngọn núi lửa trồi lên phun trào';
+          this.chronicle(v, `😨 ${what} gần ${v.name}. Họ tin rằng ${this.godNames[this.actor]} đang nổi giận và cầu khấn nhiều hơn.`, false);
+        }
+        continue;
+      }
+      const v = this.villages[e.owner];
+      if (!v) continue;
+      if (e.what === 'farm') {
+        v.farms.delete(e.i);
+        continue;
+      }
+      v.houses.delete(e.i);
+      v.buildings.delete(e.i);
+      if (e.type === 'flood') {
+        v.floods++;
+        const safer = w.seaLevel + 0.05 + v.floods * 0.01;
+        if (safer > v.minBuildHeight) v.minBuildHeight = safer;
+        if (this.once(`flood${v.id}`, 40)) this.chronicle(v, `🌊 Nước lũ cuốn trôi nhà của ${v.name}! Từ đó họ chỉ dựng nhà trên chỗ đất cao.`);
+      } else if (e.type === 'quake') {
+        if (this.once(`quake${v.id}`, 20)) this.chronicle(v, `🏚️ Động đất làm sập nhà ở ${v.name}.`);
+      } else {
+        v.fires++;
+        const first = !v.fireWary;
+        v.fireWary = true;
+        if (this.once(`fire${v.id}`, 30)) {
+          this.chronicle(
+            v,
+            first
+              ? `🔥 Lửa thiêu rụi nhà ở ${v.name}! Họ bắt đầu chặt cây quanh làng làm vành đai chống cháy.`
+              : `🔥 ${v.name} lại bị cháy nhà.`,
+          );
+        }
+      }
+    }
+    w.events.length = 0;
+  }
+
+  /** True at most once per cooldown for a key (for throttling noisy history). */
+  private once(key: string, cooldown: number) {
+    const last = this.throttle.get(key);
+    if (last !== undefined && this.world.time - last < cooldown) return false;
+    this.throttle.set(key, this.world.time);
+    return true;
+  }
+
+  private villageTick(dt: number) {
+    const w = this.world;
+    for (const v of this.villages) {
+      for (const i of v.houses) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.houses.delete(i);
+      for (const i of v.buildings.keys()) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.buildings.delete(i);
+      for (const i of v.farms) if (w.cover[i] !== Cover.FARM || w.owner[i] !== v.id) v.farms.delete(i);
+      if (!v.alive) continue;
+
+      if (v.pop === 0) {
+        v.alive = false;
+        this.endWars(v);
+        if (!this.villages.some((o) => o.alive && o.culture.id === v.culture.id)) this.stats.extinctions++;
+        this.chronicle(v, v.houses.size ? `🏚️ ${v.name} bị bỏ hoang.` : `🕯️ ${v.name} đã biến mất khỏi lịch sử.`);
+        continue;
+      }
+
+      v.jobTimer -= dt;
+      if (v.jobTimer <= 0) {
+        v.jobTimer = 1.5 + rand() * 0.5;
+        this.refreshJobs(v);
+      }
+
+      this.leadership(v);
+      this.progress(v, dt);
+      this.religionTick(v, dt);
+      this.wishTick(v, dt);
+
+      const center = idx(v.cx, v.cy);
+      if (w.localTemp(center) < 0 && !v.inWinter) {
+        v.inWinter = true;
+        v.winters++;
+        v.foodPerPerson = Math.min(6, 2 + v.winters * 1.5);
+        if (v.winters === 1) this.chronicle(v, `❄️ ${v.name} trải qua mùa đông đầu tiên. Họ bắt đầu tích trữ lương thực cho những mùa đông sau.`);
+      } else if (w.localTemp(center) > 6) {
+        v.inWinter = false;
+      }
+
+      if (w.isWater(center)) {
+        const dry = w.findNearest(v.cx, v.cy, 25, (j) => w.canWalk(j) && w.height[j] >= v.minBuildHeight);
+        if (dry >= 0) {
+          v.cx = cx(dry);
+          v.cy = cy(dry);
+          this.chronicle(v, `🚶 ${v.name} bị ngập, cả làng dời lên chỗ đất cao.`);
+        }
+      }
+
+      v.blessFertile = Math.max(0, v.blessFertile - dt);
+      v.blessWar = Math.max(0, v.blessWar - dt);
+      v.birthTimer -= dt * (v.blessFertile > 0 ? 3 : 1);
+      if (v.birthTimer <= 0) {
+        v.birthTimer = (8 + rand() * 6) / (1 + v.pop / 30);
+        if (v.pop >= 2 && v.pop < v.cap && v.pop < 80 + v.era * 15 && v.food >= v.pop * 0.6 + 2 && w.localTemp(center) > 0) {
+          const house = pick([...v.houses]);
+          if (this.spawnHuman(cx(house) + 0.5, cy(house) + 0.5, v.id, true)) {
+            v.food -= 2;
+            this.births++;
+            this.stats.births++;
+          }
+        }
+      }
+
+      // Roads are resurfaced as the nation advances.
+      if (v.houses.size && rand() < 0.1) {
+        const all = [...v.houses];
+        this.carveRoad(v, all[Math.floor(rand() * all.length)]);
+      }
+
+      // Old houses are gradually rebuilt in the current era's style.
+      if (v.houses.size && rand() < 0.04 * dt * 4 && v.wood >= ERAS[v.era].houseWood + 2) {
+        for (const i of v.houses) {
+          if (w.timer[i] < v.era) {
+            w.timer[i] = Math.floor(w.timer[i]) + 1;
+            v.wood -= ERAS[v.era].houseWood;
+            break;
+          }
+        }
+      }
+
+      // A crowded village with no room left sends settlers to found a colony.
+      // A clan that outgrows its land (or its era's ideal size) splits off a new people.
+      v.colonizeCd -= dt;
+      const crowded = v.pop >= 30 && v.jobs.houseSites.length === 0;
+      const tooBig = v.pop >= 70 + v.era * 15;
+      const room = this.villages.filter((o) => o.alive).length < 72; // keep the map to a few dozen nations
+      if (v.colonizeCd <= 0 && room && (crowded || tooBig) && v.enemies.size === 0) {
+        v.colonizeCd = 160 + rand() * 120;
+        const n = tooBig ? 14 : 8;
+        const settlers = this.humans.filter((h) => h.village === v.id && h.age >= ADULT && h.age < 40 * YEAR && h.role === 'none').slice(0, n);
+        if (settlers.length >= 5) {
+          const heading = rand() * Math.PI * 2;
+          const band = this.nextBand++;
+          for (const h of settlers) {
+            h.village = -1;
+            h.band = band;
+            h.leftAt = this.world.time;
+            h.originId = v.id;
+            h.colonist = true;
+            h.origin = v.name;
+            h.heading = heading;
+            h.carryFood = 2;
+          }
+          this.chronicle(v, `⛵ ${v.name} hết đất, ${settlers.length} người lên đường đi khai phá vùng đất mới.`);
+        }
+      }
+
+      // Soldiers: about a third of the adults go to war.
+      if (v.enemies.size) {
+        const want = Math.min(50, Math.ceil(v.adults * (v.has('barracks') ? 0.5 : 0.35)));
+        let have = 0;
+        for (const h of this.humans) if (h.village === v.id && h.role === 'soldier') have++;
+        if (have < want) {
+          for (const h of this.humans) {
+            if (have >= want) break;
+            if (h.village === v.id && h.role === 'none' && h.age >= ADULT && h.age < 50 * YEAR && h.health > 0.7) {
+              h.role = 'soldier';
+              have++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private leadership(v: Village) {
+    const leader = this.byId.get(v.leaderId);
+    if (leader && !leader.dead && leader.village === v.id) return;
+    // The new ruler is a mature adult (around 30), so reigns last decades rather than years.
+    let best: Human | null = null;
+    let bestScore = Infinity;
+    for (const h of this.humans) {
+      if (h.village !== v.id || h.age < ADULT) continue;
+      const score = Math.abs(h.age / YEAR - 30);
+      if (score < bestScore) {
+        bestScore = score;
+        best = h;
+      }
+    }
+    if (!best) return;
+    const old = v.leaderName ? v.ruler : '';
+    const n = (v.regnal.get(best.name) ?? 0) + 1;
+    v.regnal.set(best.name, n);
+    v.leaderId = best.id;
+    v.leaderName = n > 1 ? `${best.name} ${ROMAN[Math.min(n, ROMAN.length) - 1]}` : best.name;
+    this.chronicle(v, old ? `👑 ${old} qua đời. ${v.ruler} lên nắm quyền ${v.name}.` : `👑 ${v.ruler} trở thành người đứng đầu ${v.name}.`, false);
+  }
+
+  private progress(v: Village, dt: number) {
+    let boost = 1;
+    for (const o of this.villages) {
+      if (o.alive && o.era > v.era && Math.hypot(o.cx - v.cx, o.cy - v.cy) < 60) {
+        boost = 1.4; // knowledge spreads from more advanced neighbours
+        break;
+      }
+    }
+    const surplus = v.food > v.pop * v.foodPerPerson ? 1.15 : 1;
+    const faith = v.patron >= 0 ? 1.1 : 1;
+    const learning =
+      (v.has('market') ? 1.1 : 1) * (v.has('library') ? 1.2 : 1) * (v.has('school') ? 1.2 : 1) * (v.has('office') ? 1.15 : 1) * (v.partners.size ? 1 + 0.08 * Math.min(3, v.partners.size) : 1);
+    v.tech += dt * 0.07 * Math.pow(v.pop, 0.6) * ERAS[v.era].pace * v.culture.traits.tech * surplus * faith * boost * learning;
+    while (v.era < MAX_ERA && v.tech >= ERAS[v.era + 1].tech) {
+      const before = v.name;
+      v.era++;
+      const e = ERAS[v.era];
+      this.chronicle(v, `${e.icon} ${before} bước vào ${e.name}! Từ nay họ được gọi là ${v.name}.`);
+      this.toasts.push({ icon: e.icon, title: `${v.base}: ${e.name}`, text: `${v.ruler || v.name} dẫn dắt dân tộc bước vào kỷ nguyên mới.` });
+    }
+  }
+
+  // ---------- Religion & wishes ----------
+
+  private religionTick(v: Village, dt: number) {
+    for (let g = 0; g < this.gods; g++) {
+      if (v.patron === g) v.addFaith(g, -dt * 0.04);
+      else v.addFaith(g, (15 - v.faiths[g]) * dt * 0.002);
+      // Missionaries from neighbours who worship this god.
+      for (const o of this.villages) {
+        if (o !== v && o.alive && o.patron === g && !v.enemies.has(o.id) && Math.hypot(o.cx - v.cx, o.cy - v.cy) < 45) {
+          v.addFaith(g, dt * (v.patron === g ? 0.03 : 0.05));
+          break;
+        }
+      }
+    }
+
+    const best = this.gods > 1 && v.faiths[1] > v.faiths[0] ? 1 : 0;
+    if (v.patron < 0 && v.faiths[best] >= 60) {
+      v.patron = best;
+      this.chronicle(v, `✨ ${v.name} từ bỏ tín ngưỡng ${v.culture.deity}, quay sang tôn thờ ${this.godNames[best]}!`);
+    } else if (v.patron >= 0 && best !== v.patron && v.faiths[best] >= 60 && v.faiths[best] > v.faiths[v.patron] + 20) {
+      const old = this.godNames[v.patron];
+      v.patron = best;
+      v.temple = false;
+      this.chronicle(v, `🔁 ${v.name} rời bỏ ${old}, cải đạo sang thờ ${this.godNames[best]}!`);
+    } else if (v.patron >= 0 && v.faiths[v.patron] < 20) {
+      const old = this.godNames[v.patron];
+      v.patron = -1;
+      v.temple = false;
+      this.stats.apostasies++;
+      this.chronicle(v, `💔 ${v.name} mất niềm tin vào ${old}, đập bỏ đền thờ và quay về với ${v.culture.deity}.`);
+    }
+
+    if (!v.temple && v.religion === 'god' && v.era >= 1 && v.wood >= 6) {
+      v.temple = true;
+      v.wood -= 6;
+      this.chronicle(v, `⛩️ ${v.name} dựng đền thờ đầu tiên dâng lên ${this.deityOf(v)}.`);
+    }
+
+    v.praying = Math.max(0, v.praying - dt);
+    v.ritualTimer -= dt;
+    if (v.ritualTimer <= 0) {
+      v.ritualTimer = 150 + rand() * 120;
+      v.praying = 10;
+      const deity = v.patron >= 0 ? this.godNames[v.patron] : v.culture.deity;
+      if (v.patron >= 0) v.addFaith(v.patron, 3);
+      this.chronicle(v, `🛐 ${v.name} mở ${v.culture.festival}, cả làng tụ họp cầu khấn ${deity}.`, false);
+    }
+  }
+
+  private wishTick(v: Village, dt: number) {
+    v.wishCooldown -= dt;
+    if (v.wishCooldown > 0 || this.wishes.some((x) => x.village === v.id)) return;
+    v.wishCooldown = 50 + (100 - v.faith) * 0.8 + rand() * 40;
+    if (v.faith < 5) return;
+    const wish = this.composeWish(v);
+    if (!wish) return;
+    this.wishes.push(wish);
+    this.toasts.push({ icon: '🙏', title: `${v.base} cầu nguyện`, text: wish.text });
+  }
+
+  private composeWish(v: Village): Wish | null {
+    const w = this.world;
+    const center = idx(v.cx, v.cy);
+    const to = this.gods > 1 ? v.leaning : 0;
+    const god = this.godNames[to];
+    const mk = (kind: WishKind, text: string, reason: string, target = -1): Wish => ({
+      id: this.wishId++,
+      village: v.id,
+      god: to,
+      kind,
+      text,
+      reason,
+      target,
+      expires: w.time + 75,
+    });
+
+    if (v.enemies.size) {
+      const enemy = this.villages[[...v.enemies][0]];
+      if (v.losses > v.kills + 3 || v.pop < enemy.pop * 0.7) {
+        return v.culture.traits.aggression >= 1.3
+          ? mk('smite', `Hỡi ${god}, xin giáng sấm sét trừng phạt ${enemy.name}!`, `Họ đã mất ${v.losses} chiến binh trong cuộc chiến.`, enemy.id)
+          : mk('peace', `Xin ${god} chấm dứt chiến tranh với ${enemy.name}.`, `Chiến tranh đã cướp đi ${v.losses} sinh mạng.`, enemy.id);
+      }
+      return mk('victory', `Xin ${god} phù hộ cho đoàn quân ${v.base} chiến thắng!`, `Họ đang giao chiến với ${enemy.name}.`, enemy.id);
+    }
+    if (w.localTemp(center) < 2) return mk('warmth', `Xin ${god} xua tan giá rét, mang mùa xuân trở lại.`, `Trời lạnh ${Math.round(w.localTemp(center))}°C, ruộng đồng đóng băng.`);
+    const here = w.weatherAt(center);
+    if (here === 'drought') return mk('rain', `Xin ${god} chấm dứt hạn hán, ban mưa xuống.`, 'Hạn hán làm ruộng đồng khô nứt, cây rừng bốc cháy.');
+    if (here === 'storm' || (w.rainingAt(center) && v.floods > 0)) return mk('sun', `Xin ${god} cho trời tạnh, nước rút.`, here === 'storm' ? 'Bão tố đang tàn phá vùng đất.' : 'Họ từng bị lũ cuốn trôi nhà cửa.');
+    if (v.food < v.pop) {
+      return here === 'sun'
+        ? mk('rain', `Xin ${god} ban mưa xuống cho ruộng đồng.`, `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`)
+        : mk('harvest', `Xin ${god} ban cho một mùa bội thu.`, `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`);
+    }
+    if (v.jobs.trees.length < 6) return mk('forest', `Xin ${god} cho rừng xanh mọc lại quanh làng.`, 'Cây cối quanh làng đã bị chặt gần hết.');
+    if (this.animals.grid.count(v.cx, v.cy, v.radius + 8, (a) => a.kind === 'deer') < 2) {
+      return mk('game', `Xin ${god} ban cho muông thú để săn bắt.`, 'Thú rừng quanh đây đã biến mất.');
+    }
+    if (v.pop < 15) return mk('fertility', `Xin ${god} ban phước cho con cháu đầy đàn.`, `Làng chỉ có ${v.pop} người.`);
+    const roll = rand();
+    if (roll < 0.4 && v.era < MAX_ERA) return mk('knowledge', `Xin ${god} khai sáng tri thức cho ${v.base}.`, `Họ khao khát tiến tới ${ERAS[v.era + 1].name}.`);
+    if (roll < 0.7) return mk('harvest', `Xin ${god} ban cho một mùa bội thu.`, 'Lời cầu nguyện thường niên của dân làng.');
+    return mk('fertility', `Xin ${god} phù hộ cho các gia đình đông con.`, 'Họ mong dân tộc mình hưng thịnh.');
+  }
+
+  answerWish(id: number, yes: boolean, by = 0) {
+    const wish = this.wishes.find((x) => x.id === id);
+    if (!wish || (this.strictGods && wish.god !== by)) return;
+    const g = wish.god;
+    this.wishes = this.wishes.filter((x) => x !== wish);
+    const v = this.villages[wish.village];
+    if (!v?.alive) return;
+    if (!yes) {
+      v.addFaith(g, -10);
+      this.stats.wishesDenied++;
+      this.chronicle(v, `😞 ${this.godNames[g]} im lặng trước lời cầu xin của ${v.name}. Niềm tin của họ lung lay.`);
+      return;
+    }
+    this.grant(v, wish);
+    v.addFaith(g, 12);
+    this.stats.wishesGranted++;
+    for (const o of this.villages) {
+      if (o !== v && o.alive && Math.hypot(o.cx - v.cx, o.cy - v.cy) < 40) o.addFaith(g, 3);
+    }
+  }
+
+  private grant(v: Village, wish: Wish) {
+    const w = this.world;
+    const god = this.godNames[wish.god];
+    switch (wish.kind) {
+      case 'rain':
+        w.paintWeather(v.cx, v.cy, v.radius + 24, 'rain');
+        this.chronicle(v, `🌧️ ${god} ban mưa cho ${v.name}. Dân làng nhảy múa dưới mưa.`);
+        break;
+      case 'sun':
+        w.paintWeather(v.cx, v.cy, v.radius + 24, 'sun');
+        w.seaLevel = Math.min(w.seaLevel, BASE_SEA + 0.005);
+        this.chronicle(v, `☀️ ${god} xua tan mây đen, nước rút về biển. ${v.name} tạ ơn thần linh.`);
+        break;
+      case 'warmth':
+        w.paintWeather(v.cx, v.cy, v.radius + 24, 'sun', 16);
+        this.chronicle(v, `🌸 ${god} mang mùa xuân trở lại, băng tuyết tan dần quanh ${v.name}.`);
+        break;
+      case 'harvest':
+        for (const i of v.farms) w.timer[i] = 1;
+        v.food += v.pop * 1.5;
+        this.chronicle(v, `🌾 ${god} ban mùa bội thu, kho lúa của ${v.name} đầy ắp.`);
+        break;
+      case 'fertility':
+        v.blessFertile = 90;
+        this.chronicle(v, `👶 ${god} ban phước, các gia đình ở ${v.name} đông con hơn.`);
+        break;
+      case 'victory':
+        v.blessWar = 90;
+        this.chronicle(v, `⚔️ ${god} phù hộ đoàn quân ${v.base} — các chiến binh hăng hái gấp bội.`);
+        break;
+      case 'peace': {
+        const o = this.villages[wish.target];
+        if (o) this.makePeace(v, o, `${god} đáp lời cầu xin hòa bình`);
+        break;
+      }
+      case 'smite': {
+        const o = this.villages[wish.target];
+        if (!o?.alive) break;
+        const houses = [...o.houses];
+        for (let k = 0; k < 4; k++) {
+          const i = houses.length ? pick(houses) : idx(o.cx, o.cy);
+          w.events.push({ type: 'lightning', x: cx(i), y: cy(i) });
+          if (w.canBurn(i)) w.ignite(i);
+        }
+        o.addFaith(wish.god, 10);
+        this.chronicle(v, `⚡ ${god} giáng sấm sét xuống ${o.name} theo lời cầu xin của ${v.name}!`);
+        break;
+      }
+      case 'game':
+        for (let k = 0; k < 8; k++) this.spawnAnimal('deer', v.cx + rand() * 14 - 7, v.cy + rand() * 14 - 7);
+        this.chronicle(v, `🦌 ${god} gửi đàn hươu tới vùng đất của ${v.name}.`);
+        break;
+      case 'forest':
+        for (let k = 0; k < 4; k++) {
+          const a = rand() * Math.PI * 2;
+          w.plantForest(v.cx + Math.cos(a) * (v.radius + 2), v.cy + Math.sin(a) * (v.radius + 2), 3);
+          w.plantForest(v.cx + Math.cos(a) * (v.radius + 2), v.cy + Math.sin(a) * (v.radius + 2), 3);
+        }
+        this.chronicle(v, `🌳 ${god} cho rừng xanh mọc lên quanh ${v.name}.`);
+        break;
+      case 'knowledge':
+        v.tech += 60;
+        this.chronicle(v, `📜 ${god} khai sáng cho các hiền nhân của ${v.name}.`);
+        break;
+    }
+  }
+
+  // ---------- War & diplomacy ----------
+
+  private diplomacyTick() {
+    const alive = this.villages.filter((v) => v.alive);
+    // Trade: nations at peace with markets within reach become partners, linked by a highway.
+    for (const a of alive) {
+      for (const b of alive) {
+        if (a.id >= b.id || a.enemies.has(b.id)) continue;
+        const d = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+        const trading = d < 90 && a.has('market') && b.has('market');
+        if (trading && !a.partners.has(b.id)) {
+          a.partners.add(b.id);
+          b.partners.add(a.id);
+          this.carveHighway(a, b);
+          this.chronicle(a, `🤝 ${a.name} và ${b.name} mở đường buôn bán.`);
+          this.chronicle(b, `🤝 ${b.name} và ${a.name} mở đường buôn bán.`, false);
+        } else if (!trading && a.partners.has(b.id)) {
+          a.partners.delete(b.id);
+          b.partners.delete(a.id);
+        }
+        if (trading) {
+          a.opinion.set(b.id, Math.min(100, (a.opinion.get(b.id) ?? 0) + 1.5));
+          b.opinion.set(a.id, Math.min(100, (b.opinion.get(a.id) ?? 0) + 1.5));
+          if (rand() < 0.05) this.carveHighway(a, b);
+          if (a.culture.id !== b.culture.id) {
+            this.influence(a, b);
+            this.influence(b, a);
+          }
+        }
+        // Kindred peoples who have long traded in friendship may unite into one nation.
+        const close = (a.opinion.get(b.id) ?? 0) > 70 && (b.opinion.get(a.id) ?? 0) > 70;
+        if (trading && close && a.culture.id === b.culture.id && !a.enemies.size && !b.enemies.size && rand() < 0.06) {
+          const [big, small] = a.pop >= b.pop ? [a, b] : [b, a];
+          if (small.alive && big.alive) this.annex(big, small, true);
+        }
+      }
+    }
+    for (const a of alive) {
+      for (const b of alive) {
+        if (a === b) continue;
+        const d = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+        if (d > 80) continue;
+        const border = d < a.radius + b.radius + 10;
+        let delta = 0;
+        if (border) delta -= 1.5;
+        if (a.pop >= 8 && (a.pop >= a.cap * 0.9 || a.jobs.houseSites.length === 0)) delta -= 1.5;
+        if (a.food < a.pop * 0.8) delta -= 1.2;
+        if (a.era > b.era) delta -= 0.5 * (a.era - b.era);
+        if (a.patron !== b.patron) delta -= a.patron >= 0 && b.patron >= 0 ? 1.6 : 0.8; // holy wars between two gods' faithful
+        if (a.culture.id === b.culture.id) delta += 0.7;
+        if (!border) delta += 0.6;
+        if (delta < 0) delta *= a.culture.traits.aggression;
+        delta += rand() - 0.5;
+        const op = Math.max(-100, Math.min(100, (a.opinion.get(b.id) ?? 0) + delta));
+        a.opinion.set(b.id, op);
+        if (op < -60 && border && !a.enemies.has(b.id) && a.enemies.size === 0 && a.adults >= 6 && b.pop >= 3) {
+          const why =
+            a.patron >= 0 && b.patron >= 0 && a.patron !== b.patron
+              ? `nhân danh ${this.godNames[a.patron]} — một cuộc thánh chiến`
+              : a.patron !== b.patron
+              ? 'vì khác biệt tín ngưỡng'
+              : a.food < a.pop * 0.8
+                ? 'vì nạn đói, quyết tranh giành lương thực'
+                : 'để tranh giành đất đai';
+          this.declareWar(a, b, why);
+        }
+      }
+    }
+
+    for (const war of [...this.wars]) {
+      const A = this.villages[war.a];
+      const B = this.villages[war.b];
+      if (!A.alive || !B.alive) {
+        this.wars = this.wars.filter((x) => x !== war);
+        continue;
+      }
+      const [weak, strong] = A.pop < B.pop ? [A, B] : [B, A];
+      if (weak.pop <= 4 && strong.pop >= 10) this.annex(strong, weak);
+      else if (this.world.time - war.start > 120 && rand() < 0.08) this.makePeace(A, B, 'hai bên kiệt sức và ký hòa ước');
+    }
+  }
+
+  /** Trade carries customs, festivals and ideas from one people to another. */
+  private influence(v: Village, from: Village) {
+    const before = v.influences.get(from.culture.id) ?? 0;
+    const after = Math.min(100, before + 2);
+    v.influences.set(from.culture.id, after);
+    if (before < 50 && after >= 50) {
+      this.stats.exchanges++;
+      this.chronicle(v, `🎎 Văn hóa ${from.culture.name} lan tỏa sang ${v.name}: người dân bắt đầu mở cả ${from.culture.festival} và học nghề ${from.culture.craft}.`);
+    }
+  }
+
+  private declareWar(a: Village, b: Village, why: string) {
+    if (a.enemies.has(b.id)) return;
+    a.enemies.add(b.id);
+    b.enemies.add(a.id);
+    a.opinion.set(b.id, -80);
+    b.opinion.set(a.id, -80);
+    this.wars.push({ a: a.id, b: b.id, start: this.world.time });
+    this.stats.wars++;
+    const text = `⚔️ ${a.ruler || a.name} của ${a.name} tuyên chiến với ${b.name} ${why}!`;
+    this.chronicle(a, text);
+    this.chronicle(b, `⚔️ ${b.name} bị ${a.name} tuyên chiến.`, false);
+    this.toasts.push({ icon: '⚔️', title: 'Chiến tranh!', text: `${a.name} tuyên chiến với ${b.name}` });
+  }
+
+  private makePeace(a: Village, b: Village, why: string) {
+    if (!a.enemies.has(b.id)) return;
+    a.enemies.delete(b.id);
+    b.enemies.delete(a.id);
+    a.opinion.set(b.id, 10);
+    b.opinion.set(a.id, 10);
+    this.wars = this.wars.filter((w) => !((w.a === a.id && w.b === b.id) || (w.a === b.id && w.b === a.id)));
+    this.stats.treaties++;
+    for (const h of this.humans) if ((h.village === a.id && !a.enemies.size) || (h.village === b.id && !b.enemies.size)) h.role = 'none';
+    this.chronicle(a, `🕊️ ${a.name} và ${b.name} ký hòa ước — ${why}.`);
+    this.chronicle(b, `🕊️ ${b.name} và ${a.name} ký hòa ước.`, false);
+  }
+
+  private endWars(v: Village) {
+    for (const e of [...v.enemies]) {
+      const o = this.villages[e];
+      o.enemies.delete(v.id);
+      if (!o.enemies.size) for (const h of this.humans) if (h.village === o.id) h.role = 'none';
+    }
+    v.enemies.clear();
+    this.wars = this.wars.filter((w) => w.a !== v.id && w.b !== v.id);
+  }
+
+  private annex(winner: Village, loser: Village, peaceful = false) {
+    const w = this.world;
+    for (const h of this.humans) {
+      if (h.village !== loser.id) continue;
+      h.village = winner.id;
+      h.role = 'none';
+    }
+    for (const i of [...loser.houses, ...loser.buildings.keys()]) {
+      w.owner[i] = winner.id;
+      this.transferBuilding(i, loser, winner);
+    }
+    for (const i of loser.farms) {
+      w.owner[i] = winner.id;
+      winner.farms.add(i);
+    }
+    loser.houses.clear();
+    loser.farms.clear();
+    winner.food += loser.food;
+    winner.tech += loser.tech * 0.2;
+    winner.annexed++;
+    loser.alive = false;
+    loser.absorbedBy = winner.id;
+    for (const [c, k] of loser.influences) winner.influences.set(c, Math.max(winner.influences.get(c) ?? 0, k));
+    if (winner.culture.id !== loser.culture.id) winner.influences.set(loser.culture.id, Math.max(60, winner.influences.get(loser.culture.id) ?? 0));
+    this.endWars(loser);
+    if (peaceful) {
+      this.stats.unions++;
+      this.chronicle(winner, `🤝 ${winner.name} và ${loser.name} thống nhất thành một quốc gia dưới sự trị vì của ${winner.ruler || winner.name}.`);
+      this.chronicle(loser, `🤝 ${loser.name} tự nguyện hợp nhất vào ${winner.name}.`, false);
+      this.toasts.push({ icon: '🤝', title: 'Thống nhất!', text: `${loser.name} hợp nhất vào ${winner.name}` });
+      return;
+    }
+    this.stats.annexations++;
+    const assim = winner.culture.id !== loser.culture.id ? ` Văn hóa ${loser.culture.name} dần hòa vào ${winner.culture.name}.` : '';
+    this.chronicle(winner, `👑 ${winner.name} chinh phục và sáp nhập ${loser.name}!${assim}`);
+    this.chronicle(loser, `🏳️ ${loser.name} đầu hàng, bị sáp nhập vào ${winner.name}.`, false);
+    this.toasts.push({ icon: '👑', title: 'Chinh phục!', text: `${winner.name} sáp nhập ${loser.name}` });
+  }
+
+  // ---------- Individual humans ----------
+
+  private kill(h: Human, cause: string) {
+    if (h.dead) return;
+    h.dead = true;
+    this.stats.deaths++;
+    this.deaths.set(cause, (this.deaths.get(cause) ?? 0) + 1);
+    if (cause === 'tử trận' && h.lastHitBy >= 0) {
+      const killer = this.villages[h.lastHitBy];
+      if (killer) killer.kills++;
+      if (h.village >= 0) this.villages[h.village].losses++;
+    }
+  }
+
+  private updateHuman(h: Human, dt: number) {
+    const w = this.world;
+    if (h.voyageUntil > w.time) {
+      h.inside = true; // aboard ship
+      return;
+    }
+    if (h.voyageUntil > 0) {
+      h.voyageUntil = 0;
+      h.inside = false;
+    }
+    h.age += dt;
+    h.hunger = Math.min(1.2, h.hunger + dt * 0.006);
+    const v = h.village >= 0 ? this.villages[h.village] : null;
+
+    const ci = idx(Math.floor(h.x), Math.floor(h.y));
+    const inWater = w.isWater(ci) && !w.isIce(ci);
+    h.inside = (h.action === 'rest' || h.action === 'retreat') && w.cover[ci] === Cover.HOUSE && !h.hasTarget;
+
+    if (inWater) {
+      h.health -= dt * 0.12;
+      h.harm = 'chết đuối';
+    }
+    const c = w.cover[ci];
+    if (c === Cover.FIRE) {
+      h.health -= dt * 0.5;
+      h.harm = 'chết cháy';
+    } else if (c === Cover.LAVA) {
+      h.health -= dt * 2;
+      h.harm = 'bị dung nham thiêu';
+    }
+    const byFire = v !== null && Math.hypot(h.x - v.cx - 0.5, h.y - v.cy - 0.5) < 2.5;
+    if (h.inside || byFire) {
+      h.warmth = Math.min(1, h.warmth + dt * (h.inside ? 0.15 : 0.08));
+      if (h.inside) h.health = Math.min(1, h.health + dt * 0.01);
+    } else {
+      const temp = w.localTemp(ci);
+      const hardy = (v ? ERAS[v.era].cold * v.culture.traits.cold : 1) || 1;
+      let loss = 0;
+      if (temp < 6) loss += (6 - temp) * 0.0015 * hardy;
+      if (w.rainingAt(ci)) loss += 0.01 * hardy;
+      if (inWater) loss += 0.05;
+      h.warmth = loss > 0 ? Math.max(0, h.warmth - loss * dt) : Math.min(1, h.warmth + dt * 0.05);
+    }
+    if (h.warmth < 0.15) {
+      h.health -= dt * 0.03;
+      h.harm = 'chết rét';
+    }
+    if (h.hunger >= 1) {
+      h.health -= dt * 0.02;
+      h.harm = 'chết đói';
+    }
+    if (h.hunger < 0.6 && h.warmth > 0.4 && !inWater && h.action !== 'fight') h.health = Math.min(1, h.health + dt * 0.02);
+
+    if (h.health <= 0) return this.kill(h, h.harm || 'chết');
+    if (h.age > h.maxAge) return this.kill(h, 'qua đời vì tuổi già');
+
+    h.think -= dt;
+    const panicking = h.action === 'flee' || h.action === 'swim';
+    const danger = !panicking && (inWater || (w.fireCount > 0 && this.dangerNear(h, 3)));
+    if (h.think <= 0 || danger) {
+      h.think = 0.6 + rand() * 0.4;
+      this.decide(h);
+    }
+    this.act(h, dt);
+  }
+
+  private dangerNear(h: Human, r: number) {
+    return this.world.findNearest(h.x, h.y, r, (j) => this.world.isDanger(j)) >= 0;
+  }
+
+  /** True if no one else is already on their way to work cell i. */
+  private free(i: number, h: Human) {
+    const o = this.claims.get(i);
+    return !o || o === h || o.dead || o.targetIdx !== i || !o.hasTarget;
+  }
+
+  private go(h: Human, action: Action, target: number, thought: string) {
+    if (target < 0) return false;
+    if (target === h.avoid && this.world.time < h.avoidUntil) return false;
+    if (CLAIMED.has(action)) this.claims.set(target, h);
+    if (action !== h.action || target !== h.targetIdx) {
+      h.work = 0;
+      h.stuck = 0;
+      h.lastDist = Infinity;
+    }
+    h.action = action;
+    h.targetIdx = target;
+    h.tx = cx(target) + 0.5;
+    h.ty = cy(target) + 0.5;
+    h.hasTarget = true;
+    h.thought = thought;
+    return true;
+  }
+
+  private chase(h: Human, action: 'fight' | 'hunt', x: number, y: number, thought: string) {
+    if (h.action !== action) {
+      h.stuck = 0;
+      h.lastDist = Infinity;
+    }
+    h.action = action;
+    h.targetIdx = idx(clampX(x), clampY(y));
+    h.tx = x;
+    h.ty = y;
+    h.hasTarget = true;
+    h.thought = thought;
+    return true;
+  }
+
+  private stay(h: Human, action: Action, thought: string) {
+    h.action = action;
+    h.hasTarget = false;
+    h.thought = thought;
+  }
+
+  /** Priority-ordered reasoning: survive, defend, shelter, eat, then work for the village. */
+  private decide(h: Human) {
+    const w = this.world;
+    let v = h.village >= 0 ? this.villages[h.village] : null;
+    if (v && !v.alive) {
+      h.village = v.absorbedBy;
+      v = h.village >= 0 ? this.villages[h.village] : null;
+      if (v && !v.alive) {
+        h.village = -1;
+        v = null;
+      }
+    }
+    if (!v) h.role = 'none';
+    const x = Math.floor(h.x);
+    const y = Math.floor(h.y);
+    const ci = idx(x, y);
+    const storm = w.weatherAt(ci) === 'storm';
+    const adult = h.age >= ADULT;
+
+    // 1. Drowning → swim to the nearest dry land.
+    if (w.isWater(ci) && !w.isIce(ci)) {
+      const land = w.findNearest(x, y, 25, (j) => w.canWalk(j) && w.height[j] > w.seaLevel + 0.01);
+      if (this.go(h, 'swim', land, 'Cứu với! Nước ngập rồi!')) return;
+    }
+
+    // 2. Fire or lava nearby → run directly away.
+    if (w.fireCount > 0) {
+      const fire = w.findNearest(x, y, 4, (j) => w.isDanger(j));
+      if (fire >= 0) {
+        const dx = h.x - cx(fire) - 0.5;
+        const dy = h.y - cy(fire) - 0.5;
+        const d = Math.hypot(dx, dy) || 1;
+        const safe = w.findNearest(clampX(h.x + (dx / d) * 10), clampY(h.y + (dy / d) * 10), 6, (j) =>
+          w.canWalk(j) && w.cover[j] !== Cover.FOREST,
+        );
+        const what = w.cover[fire] === Cover.LAVA ? 'Dung nham! Chạy mau!' : 'Cháy! Chạy mau!';
+        if (this.go(h, 'flee', safe, what)) return;
+      }
+    }
+
+    // 3. Water rising and we're on low ground → climb.
+    if ((storm || w.seaLevel > BASE_SEA + 0.015) && w.height[ci] < w.seaLevel + 0.025) {
+      const high = w.findNearest(x, y, 20, (j) => w.canWalk(j) && w.height[j] > w.seaLevel + 0.07);
+      if (this.go(h, 'flee', high, 'Nước đang dâng, lên chỗ cao thôi!')) return;
+    }
+
+    // 4. War: soldiers fight, villagers defend their homes.
+    if (v && v.enemies.size) {
+      if (h.role === 'soldier' && this.soldierDuty(h, v)) return;
+      const invader = this.humanGrid.nearest(h.x, h.y, 7, (o) => o.village >= 0 && v!.enemies.has(o.village) && !o.inside);
+      if (invader) {
+        if (adult && h.health > 0.5) {
+          h.foe = invader;
+          if (this.chase(h, 'fight', invader.x, invader.y, 'Giặc tới! Cầm vũ khí giữ làng!')) return;
+        }
+        const home = this.nearestHouse(h, v);
+        if (this.go(h, 'rest', home, 'Giặc tới! Trốn vào nhà!')) return;
+      }
+    }
+
+    // 5. Wolves: adults drive them off, children hide.
+    const wolf = this.animals.grid.nearest(h.x, h.y, 5, (a) => a.kind === 'wolf');
+    if (wolf) {
+      if (adult && h.health > 0.4) {
+        h.prey = wolf;
+        if (this.chase(h, 'hunt', wolf.x, wolf.y, 'Sói! Đuổi nó đi!')) return;
+      }
+      const home = this.nearestHouse(h, v);
+      if (this.go(h, 'rest', home, 'Có sói! Trốn vào nhà!')) return;
+    }
+
+    // 6. Shelter from storm, cold, rain and night.
+    const night = w.daylight() < 0.3;
+    const cold = w.localTemp(ci) < 2;
+    const needShelter = storm || night || (cold && h.warmth < 0.8) || (w.rainingAt(ci) && h.warmth < 0.6);
+    if (needShelter && h.hunger < 0.85) {
+      const home = this.nearestHouse(h, v);
+      if (home >= 0) {
+        const why = storm ? 'Bão to quá, trốn trong nhà' : cold ? 'Lạnh quá, vào nhà sưởi ấm' : night ? 'Tối rồi, về nhà ngủ' : 'Mưa rồi, về nhà thôi';
+        if (this.go(h, 'rest', home, why)) return;
+      }
+      if (v && v.wood >= ERAS[v.era].houseWood && !storm) {
+        if (this.go(h, 'build', this.pickJob(v.jobs.houseSites, h, (j) => this.validHouseSite(j, v!), true), 'Không có chỗ trú, phải dựng nhà ngay!')) return;
+      }
+      if (v && cold && !storm) {
+        if (this.go(h, 'rest', idx(v.cx, v.cy), 'Chưa có nhà, ra sưởi bên đống lửa của làng')) return;
+      }
+      if (storm) {
+        if (v?.stormWary && w.findNearest(x, y, 1, (j) => w.cover[j] === Cover.FOREST) >= 0) {
+          const open = w.findNearest(x, y, 8, (j) => w.canWalk(j) && w.cover[j] === Cover.NONE);
+          if (this.go(h, 'flee', open, 'Bão có sét, phải tránh xa cây cao!')) return;
+        }
+        return this.stay(h, 'huddle', 'Không có nhà... co ro chờ bão tan');
+      }
+      if (night) return this.stay(h, 'huddle', 'Ngủ tạm ngoài trời');
+    }
+
+    // 7. Festival / worship at the village centre.
+    if (v && v.praying > 0 && h.hunger < 0.7) {
+      const a = (h.id * 2.4) % (Math.PI * 2);
+      const ring = 2.5 + (h.id % 5) * 0.9; // concentric rings around the shrine
+      const spot = w.findNearest(v.cx + Math.cos(a) * ring, v.cy + Math.sin(a) * ring, 2, (j) => w.canWalk(j));
+      const deity = v.patron >= 0 ? this.godNames[v.patron] : v.culture.deity;
+      if (this.go(h, 'pray', spot, `Cầu khấn ${deity} trong ${v.culture.festival}`)) return;
+    }
+
+    // 8. Hunger.
+    if (h.hunger > 0.55) {
+      if (h.carryFood > 0) {
+        h.carryFood--;
+        h.hunger = Math.max(0, h.hunger - 0.5);
+        return this.stay(h, 'idle', 'Ăn chỗ đồ ăn mang theo');
+      }
+      if (v && v.food >= 1) {
+        if (this.go(h, 'eat', idx(v.cx, v.cy), 'Đói rồi, về kho làng ăn')) return;
+      }
+      const food = v
+        ? this.pickJob([...v.jobs.ripe, ...v.jobs.fish, ...v.jobs.trees], h, (j) => this.foodAt(j) !== null)
+        : w.findNearest(x, y, 20, (j) => this.foodAt(j) !== null && this.free(j, h));
+      if (food >= 0 && this.go(h, 'harvest', food, FOOD_THOUGHT[this.foodAt(food)!])) return;
+      if (v) {
+        this.say(`🍂 ${v.name} cạn lương thực, có người bỏ làng ra đi.`, `starve${v.id}`, 60);
+        h.origin = v.name;
+        h.village = -1;
+        h.role = 'none';
+      }
+      return this.migrate(h, 'Đói... phải đi xa tìm vùng đất màu mỡ');
+    }
+
+    // 9. Bring gathered goods home.
+    if (v && (h.carryFood > 0 || h.carryWood > 0)) {
+      if (this.go(h, 'deliver', idx(v.cx, v.cy), 'Mang đồ về kho làng')) return;
+    }
+
+    if (v) return this.work(h, v);
+    return this.nomad(h);
+  }
+
+  private soldierDuty(h: Human, v: Village) {
+    if (h.health < 0.35) {
+      const home = this.nearestHouse(h, v);
+      return this.go(h, 'retreat', home >= 0 ? home : idx(v.cx, v.cy), 'Bị thương nặng, rút về làng');
+    }
+    const foe = this.humanGrid.nearest(h.x, h.y, 9, (o) => o.village >= 0 && v.enemies.has(o.village) && !o.inside);
+    if (foe) {
+      h.foe = foe;
+      return this.chase(h, 'fight', foe.x, foe.y, `Xông lên! Đánh tan quân ${this.villages[foe.village].base}!`);
+    }
+    let target: Village | null = null;
+    let td = Infinity;
+    for (const e of v.enemies) {
+      const o = this.villages[e];
+      const d = Math.hypot(o.cx - h.x, o.cy - h.y);
+      if (o.alive && d < td) {
+        td = d;
+        target = o;
+      }
+    }
+    if (!target) return false;
+    if (td < 5) {
+      let house = -1;
+      let hd = Infinity;
+      for (const i of target.houses) {
+        const d = Math.hypot(cx(i) - h.x, cy(i) - h.y);
+        if (d < hd) {
+          hd = d;
+          house = i;
+        }
+      }
+      if (house >= 0) return this.go(h, 'raid', house, v.era >= 3 ? `Chiếm lấy nhà của ${target.base}!` : `Đốt trụi làng ${target.base}!`);
+    }
+    const w = this.world;
+    const camp = w.findNearest(target.cx, target.cy, 3, (j) => w.canWalk(j));
+    return this.go(h, 'march', camp, `Hành quân tới ${target.name}, vì ${v.base}!`);
+  }
+
+  private work(h: Human, v: Village) {
+    const w = this.world;
+    const era = ERAS[v.era];
+
+    if (v.jobs.firebreak.length) {
+      const tree = this.pickJob(v.jobs.firebreak, h, (j) => w.cover[j] === Cover.FOREST);
+      if (this.go(h, 'chop', tree, 'Phát quang cây sát nhà để phòng cháy')) return;
+    }
+
+    const needFood = v.food < v.pop * v.foodPerPerson;
+    const needHouse = v.cap < v.pop + 2;
+    const foodFirst = needFood && (!needHouse || h.id % 2 === 0);
+
+    if (foodFirst) {
+      const ripe = this.pickJob(v.jobs.ripe, h, (j) => w.cover[j] === Cover.FARM && w.timer[j] >= 0.8);
+      if (this.go(h, 'harvest', ripe, 'Lúa chín rồi, gặt mang về kho')) return;
+      if (v.farms.size < Math.ceil(v.pop * 0.6) && w.localTemp(idx(v.cx, v.cy)) > 0) {
+        const site = this.pickJob(v.jobs.farmSites, h, (j) => w.cover[j] === Cover.NONE && !w.isWater(j), true);
+        const msg = v.winters > 0 ? 'Khai hoang thêm ruộng để trữ cho mùa đông' : 'Khai hoang ruộng mới';
+        if (this.go(h, 'farm', site, msg)) return;
+      }
+      if (h.age >= ADULT) {
+        const deer = this.animals.grid.nearest(h.x, h.y, 14, (a) => a.kind === 'deer');
+        if (deer) {
+          h.prey = deer;
+          if (this.chase(h, 'hunt', deer.x, deer.y, `Đi săn hươu bằng ${era.weapon}`)) return;
+        }
+      }
+      const wild = this.pickJob([...v.jobs.fish, ...v.jobs.trees], h, (j) => this.foodAt(j) !== null);
+      if (wild >= 0 && this.go(h, 'harvest', wild, FOOD_THOUGHT[this.foodAt(wild)!] + ' cho làng')) return;
+    }
+
+    if (needHouse) {
+      if (v.wood >= era.houseWood) {
+        const site = this.pickJob(v.jobs.houseSites, h, (j) => this.validHouseSite(j, v), true);
+        const msg = v.floods > 0 ? 'Dựng nhà mới — chọn chỗ cao cho khỏi lũ' : 'Dựng nhà mới cho làng';
+        if (this.go(h, 'build', site, msg)) return;
+      }
+      const tree = this.pickJob(v.jobs.trees, h, (j) => w.cover[j] === Cover.FOREST);
+      if (this.go(h, 'chop', tree, 'Đi đốn gỗ làm nhà')) return;
+    }
+
+    const civic = needHouse ? null : this.missingSpecial(v);
+    if (civic && v.wood >= era.houseWood * 2) {
+      if (this.go(h, 'build', this.civicSite(v, h, civic), `Xây ${SPECIAL_LABEL[civic]} cho ${v.base}`)) return;
+    }
+
+    if (v.wood < 8 + v.era * 2) {
+      const tree = this.pickJob(v.jobs.trees, h, (j) => w.cover[j] === Cover.FOREST);
+      if (this.go(h, 'chop', tree, 'Kiếm thêm gỗ dự trữ')) return;
+    }
+
+    // Nothing to do: mostly stay home (keeps streets readable), sometimes stroll.
+    const home = this.nearestHouse(h, v);
+    if (home >= 0 && (h.age < ADULT || rand() < 0.6)) {
+      if (this.go(h, 'rest', home, h.age < ADULT ? 'Chơi đùa trong nhà' : 'Nghỉ ngơi ở nhà')) return;
+    }
+    const r = v.radius * 0.6;
+    const spot = w.findNearest(v.cx + (rand() * 2 - 1) * r, v.cy + (rand() * 2 - 1) * r, 3, (j) => w.canWalk(j));
+    if (!this.go(h, 'wander', spot, 'Thong thả dạo quanh làng')) this.stay(h, 'idle', 'Nghỉ ngơi');
+  }
+
+  /**
+   * Choose a job cell from a village's list: the first free one for ordered lists (houses near the
+   * centre first), otherwise the one nearest to the worker.
+   */
+  private pickJob(list: number[], h: Human, valid: (i: number) => boolean, ordered = false) {
+    let best = -1;
+    let bd = Infinity;
+    for (const i of list) {
+      if (!this.free(i, h) || (i === h.avoid && this.world.time < h.avoidUntil) || !valid(i)) continue;
+      if (ordered) return i;
+      const d = (cx(i) - h.x) ** 2 + (cy(i) - h.y) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  private validHouseSite(i: number, v: Village) {
+    const w = this.world;
+    return w.cover[i] === Cover.NONE && !w.isWater(i) && w.height[i] >= v.minBuildHeight;
+  }
+
+  private refreshJobs(v: Village) {
+    const w = this.world;
+    const j = v.jobs;
+    j.ripe.length = 0;
+    j.trees.length = 0;
+    j.firebreak.length = 0;
+    j.fish.length = 0;
+    const houses: [number, number][] = [];
+    const farms: [number, number][] = [];
+    const r = v.radius;
+    const center = idx(v.cx, v.cy);
+    const farmMin = v.floods > 1 ? v.minBuildHeight - 0.02 : w.seaLevel + 0.03;
+    for (let dy = -r; dy <= r; dy++) {
+      const y = v.cy + dy;
+      if (y < 0 || y >= H) continue;
+      for (let dx = -r; dx <= r; dx++) {
+        const x = v.cx + dx;
+        const d2 = dx * dx + dy * dy;
+        if (x < 0 || x >= W || d2 > r * r) continue;
+        const i = y * W + x;
+        if (w.isWater(i)) continue;
+        const c = w.cover[i];
+        if (c === Cover.FARM) {
+          if (w.owner[i] === v.id && w.timer[i] >= 0.95) j.ripe.push(i);
+        } else if (c === Cover.FOREST) {
+          j.trees.push(i);
+          if (v.fireWary && this.nearHouse(i, v, 2)) j.firebreak.push(i);
+        } else if (c === Cover.NONE && i !== center) {
+          if (this.isShore(i)) j.fish.push(i);
+          const h = w.height[i];
+          const square = Math.abs(dx) <= 4 && dy >= -2 && dy <= 1; // palace + temple plaza
+          // Checkerboard plots leave room between buildings for lanes and keep sprites from piling up.
+          if (!square && ((x + y) & 1) === 0 && !w.road[i] && h >= v.minBuildHeight && h < HILL_MAX && w.snow[i] < 0.6 && !(v.fireWary && this.nearForest(i)))
+            houses.push([i, d2 + ((dx + dy) & 1 ? 0.5 : 0)]);
+          if (d2 >= 20 && !w.road[i] && w.isFertile(i) && h >= farmMin && w.snow[i] < 0.3) farms.push([i, d2 + rand() * 4]);
+        }
+      }
+    }
+    houses.sort((a, b) => a[1] - b[1]);
+    farms.sort((a, b) => a[1] - b[1]);
+    j.houseSites = houses.slice(0, 40).map((p) => p[0]);
+    j.farmSites = farms.slice(0, 40).map((p) => p[0]);
+  }
+
+  private isShore(i: number) {
+    const w = this.world;
+    const x = cx(i);
+    for (const j of [i - 1, i + 1, i - W, i + W]) {
+      if (j < 0 || j >= W * H || Math.abs(cx(j) - x) > 1) continue;
+      if (w.isWater(j)) return true;
+    }
+    return false;
+  }
+
+  private nearForest(i: number) {
+    const w = this.world;
+    for (const j of [i - 1, i + 1, i - W, i + W]) if (j >= 0 && j < W * H && w.cover[j] === Cover.FOREST) return true;
+    return false;
+  }
+
+  /** Send a whole band by ship to good land across the water. */
+  private trySail(h: Human) {
+    const w = this.world;
+    const home = this.villages[h.originId];
+    if (!home || home.era < 2 || !home.has('dock') || h.sailed) return false;
+    h.sailed = true;
+    let best = -1;
+    let bd = Infinity;
+    for (let t = 0; t < 600; t++) {
+      const i = Math.floor(rand() * W * H);
+      if (!this.goodSite(i)) continue;
+      const d = Math.hypot(cx(i) - h.x, cy(i) - h.y);
+      // Must actually cross the sea.
+      let water = 0;
+      for (let k = 1; k < 20; k++) if (w.isWater(idx(Math.round(h.x + ((cx(i) - h.x) * k) / 20), Math.round(h.y + ((cy(i) - h.y) * k) / 20)))) water++;
+      if (water >= 4 && d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    if (best < 0) return false;
+    const dock = [...home.buildings].find(([, k]) => k === kindIndex('dock'))?.[0] ?? idx(home.cx, home.cy);
+    const duration = 4 + bd / 6;
+    const tx = cx(best) + 0.5;
+    const ty = cy(best) + 0.5;
+    for (const o of this.humans) {
+      if (o.band !== h.band) continue;
+      o.voyageUntil = w.time + duration;
+      o.x = tx + rand() * 2 - 1;
+      o.y = ty + rand() * 2 - 1;
+      o.hasTarget = false;
+      o.sailed = true;
+    }
+    this.voyages.push({ x1: cx(dock) + 0.5, y1: cy(dock) + 0.5, x2: tx, y2: ty, start: w.time, end: w.time + duration, color: home.color, era: home.era });
+    this.stats.voyages++;
+    this.chronicle(home, `⛵ Đoàn thuyền của ${home.name} rời bến, vượt biển đi tìm vùng đất mới.`);
+    return true;
+  }
+
+  private nomad(h: Human) {
+    const w = this.world;
+    if (h.band >= 0) {
+      const leader = this.bandLeaders.get(h.band);
+      // No land left on this shore: a seafaring people sails for the islands beyond.
+      if (leader === h && h.colonist && w.time - h.leftAt > 35 && this.trySail(h)) return;
+      // A band that wandered too long without finding land settles for joining an existing people.
+      if ((this.bandSizes.get(h.band) ?? 0) < 3 || w.time - h.leftAt > 140) {
+        h.band = -1;
+        h.colonist = false;
+      } else if (leader && leader !== h) {
+        // Followers stay with the leader of their band.
+        if (Math.hypot(leader.x - h.x, leader.y - h.y) > 3) {
+          const spot = w.findNearest(leader.x, leader.y, 3, (j) => w.canWalk(j));
+          if (this.go(h, 'migrate', spot, leader.thought || `Theo ${leader.name} đi tìm đất mới`)) return;
+        }
+        return this.stay(h, 'idle', `Theo ${leader.name} đi tìm đất mới`);
+      }
+    }
+    if (!h.colonist) {
+      let near: Village | null = null;
+      let nd = 45;
+      for (const v of this.villages) {
+        const open = v.alive ? v.enemies.size === 0 && v.pop < v.cap + 3 : v.houses.size > 0;
+        const d = Math.hypot(v.cx - h.x, v.cy - h.y);
+        if (open && d < nd) {
+          nd = d;
+          near = v;
+        }
+      }
+      if (near) {
+        if (nd < 3) {
+          h.village = near.id;
+          if (h.culture !== near.culture.id) h.name = pick(near.culture.names);
+          h.culture = near.culture.id;
+          if (!near.alive) {
+            near.alive = true;
+            this.chronicle(near, `🏡 Những người du mục tìm thấy ${near.name} bị bỏ hoang và dọn vào ở.`);
+          }
+          near.pop++;
+          return this.stay(h, 'idle', `Gia nhập ${near.name}`);
+        }
+        if (this.go(h, 'migrate', idx(near.cx, near.cy), `Thấy ${near.name} đằng xa, đến xin ở nhờ`)) return;
+      }
+    }
+
+    // A lone wanderer cannot found a people; a band (or a small crowd of nomads) can.
+    const company = h.band >= 0 ? (this.bandSizes.get(h.band) ?? 0) : this.humanGrid.count(h.x, h.y, 5, (o) => o.village < 0 && o.band < 0);
+    if (company < 3) return this.migrate(h, 'Lang thang một mình, tìm một ngôi làng để xin ở nhờ');
+    const here = idx(Math.floor(h.x), Math.floor(h.y));
+    if (this.goodSite(here)) return this.found(h);
+    const site = w.findNearest(h.x, h.y, 15, (j) => this.goodSite(j));
+    if (this.go(h, 'migrate', site, 'Đất kia tốt, lại gần nước — lập làng thôi!')) return;
+    this.migrate(h, h.colonist ? `Đoàn người từ ${h.origin} đi tìm đất mới` : 'Lang thang tìm đất lành');
+  }
+
+  private found(h: Human) {
+    const w = this.world;
+    const id = this.villages.length;
+    const x = Math.floor(h.x);
+    const y = Math.floor(h.y);
+    const terrain = surveyTerrain(w, x, y);
+    const counts = new Map<string, number>();
+    for (const o of this.villages) if (o.alive) counts.set(o.culture.id, (counts.get(o.culture.id) ?? 0) + 1);
+    const native = cultureForTerrain(terrain, counts);
+    // Settlers may keep their ancestors' ways, or be reshaped by the new land.
+    const inherited = h.culture ? cultureById(h.culture) : null;
+    const culture = inherited && rand() < 0.5 ? inherited : native;
+    const used = new Set(this.villages.map((v) => v.base));
+    const base = culture.places.find((p) => !used.has(p)) ?? `${pick(culture.places)} ${['Mới', 'II', 'III', 'Hạ', 'Thượng'][id % 5]}`;
+    const sameCulture = this.villages.filter((v) => v.culture.id === culture.id).length;
+    const color = culture.colors[sameCulture % culture.colors.length];
+    const v = new Village(id, base, culture, color, x, y, w.seaLevel + 0.03);
+    v.founder = h.culture === culture.id ? h.name : pick(culture.names);
+    v.foundYear = this.year;
+    v.parentName = h.origin;
+    v.terrain = terrain;
+    this.villages.push(v);
+
+    let n = 0;
+    const band = h.band;
+    for (const o of this.humans) {
+      const together = band >= 0 ? o.band === band : o.band < 0 && Math.hypot(o.x - h.x, o.y - h.y) < 5;
+      if (o.village < 0 && together) {
+        o.band = -1;
+        if (o.culture !== culture.id) o.name = pick(culture.names); // they take names in the new tongue
+        o.village = id;
+        o.culture = culture.id;
+        o.colonist = false;
+        n++;
+      }
+    }
+    v.pop = n;
+    const origin = h.origin ? `rời ${h.origin}` : 'du mục';
+    const adapted = inherited && culture !== inherited ? ` Vùng đất mới dần biến họ từ ${inherited.name} thành ${culture.name}.` : '';
+    this.chronicle(v, `🏕️ ${h.name} cùng ${Math.max(0, n - 1)} người ${origin} dừng chân ở ${culture.homeland}, lập nên ${v.name}.${adapted}`);
+    this.stay(h, 'idle', `Lập nên ${v.name}`);
+    this.refreshJobs(v);
+  }
+
+  private migrate(h: Human, thought: string) {
+    const w = this.world;
+    for (let tries = 0; tries < 4; tries++) {
+      const t = w.findNearest(clampX(h.x + Math.cos(h.heading) * 15), clampY(h.y + Math.sin(h.heading) * 15), 4, (j) =>
+        w.canWalk(j),
+      );
+      if (this.go(h, 'migrate', t, thought)) return;
+      h.heading = rand() * Math.PI * 2;
+    }
+    this.stay(h, 'idle', thought);
+  }
+
+  /** Fertile, dry, unclaimed land with both water and forest close by, away from other villages. */
+  private goodSite(i: number) {
+    const w = this.world;
+    if (w.cover[i] !== Cover.NONE || !w.isFertile(i) || w.height[i] < w.seaLevel + 0.04 || w.snow[i] > 0.3) return false;
+    const x = cx(i);
+    const y = cy(i);
+    for (const v of this.villages) if (v.alive && Math.hypot(v.cx - x, v.cy - y) < v.radius + 12) return false;
+    let water = false;
+    let forest = false;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2;
+      for (const r of [3, 6]) {
+        const xx = Math.round(x + Math.cos(a) * r);
+        const yy = Math.round(y + Math.sin(a) * r);
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        const j = idx(xx, yy);
+        if (w.isWater(j)) water = true;
+        else if (w.cover[j] === Cover.FOREST) forest = true;
+      }
+    }
+    return water && forest;
+  }
+
+  private transferBuilding(i: number, from: Village, to: Village) {
+    if (from.houses.delete(i)) to.houses.add(i);
+    const k = from.buildings.get(i);
+    if (k !== undefined) {
+      from.buildings.delete(i);
+      to.buildings.set(i, k);
+    }
+  }
+
+  /** The next civic building this nation lacks, if any. */
+  private missingSpecial(v: Village): Kind | null {
+    for (const s of SPECIALS) {
+      if (v.era < s.era) continue;
+      if (s.kind === 'dock' && (!v.jobs.fish.length || v.has('dock'))) continue;
+      const want = s.per ? 1 + Math.floor(v.pop / s.per) : 1;
+      if (v.count(s.kind) < want) return s.kind;
+    }
+    return null;
+  }
+
+  /** What to raise on this plot: a home if people need one, else the civic building that is due. */
+  private nextBuilding(v: Village, t: number): Kind | null {
+    if (v.cap < v.pop + 2) return 'house';
+    const k = this.missingSpecial(v);
+    if (k === 'dock' && !this.isShore(t)) return null;
+    return k;
+  }
+
+  /** Where the next civic building should go: docks on the shore, the rest on ordinary plots. */
+  private civicSite(v: Village, h: Human, kind: Kind) {
+    const w = this.world;
+    if (kind === 'dock') return this.pickJob(v.jobs.fish, h, (j) => w.cover[j] === Cover.NONE && !w.isWater(j) && !w.road[j]);
+    return this.pickJob(v.jobs.houseSites, h, (j) => this.validHouseSite(j, v), true);
+  }
+
+  /** Lay a road from a building back to the village square (L-shaped, avoiding farms and forest). */
+  private carveRoad(v: Village, from: number) {
+    const w = this.world;
+    const tier = roadTier(v.era);
+    let x = cx(from);
+    let y = cy(from);
+    const horizontalFirst = (from & 1) === 0;
+    for (let step = 0; step < 80; step++) {
+      const dx = v.cx - x;
+      const dy = v.cy - y;
+      if (dx === 0 && dy === 0) break;
+      if ((horizontalFirst && dx !== 0) || dy === 0) x += Math.sign(dx);
+      else y += Math.sign(dy);
+      const i = idx(x, y);
+      if (Math.abs(x - v.cx) <= 1 && Math.abs(y - v.cy) <= 1) break;
+      if (w.isWater(i) || w.cover[i] !== Cover.NONE) continue;
+      if (w.road[i] < tier) w.road[i] = tier;
+    }
+  }
+
+  /** A highway between two trading partners' squares (stops at water). */
+  private carveHighway(a: Village, b: Village) {
+    const w = this.world;
+    const tier = roadTier(Math.min(a.era, b.era));
+    const n = Math.max(Math.abs(b.cx - a.cx), Math.abs(b.cy - a.cy));
+    for (let k = 0; k <= n; k++) {
+      const x = Math.round(a.cx + ((b.cx - a.cx) * k) / n);
+      const y = Math.round(a.cy + ((b.cy - a.cy) * k) / n);
+      const i = idx(x, y);
+      if (w.isWater(i) || w.cover[i] !== Cover.NONE) continue;
+      if (w.road[i] < tier) w.road[i] = tier;
+    }
+  }
+
+  private nearestHouse(h: Human, v: Village | null) {
+    if (!v) return -1;
+    let best = -1;
+    let bd = Infinity;
+    for (const i of v.houses) {
+      const d = (cx(i) - h.x) ** 2 + (cy(i) - h.y) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  private nearHouse(i: number, v: Village, r: number) {
+    const w = this.world;
+    const x = cx(i);
+    const y = cy(i);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        const j = idx(xx, yy);
+        if (w.cover[j] === Cover.HOUSE && w.owner[j] === v.id) return true;
+      }
+    }
+    return false;
+  }
+
+  /** What food, if any, can be gathered standing on cell i. */
+  private foodAt(i: number): FoodKind | null {
+    const w = this.world;
+    if (w.isWater(i)) return null;
+    const c = w.cover[i];
+    if (c === Cover.FARM) return w.timer[i] >= 0.8 ? 'farm' : null;
+    if (c === Cover.FOREST) return 'forest';
+    if (c !== Cover.NONE) return null;
+    return this.isShore(i) ? 'fish' : null;
+  }
+
+  private act(h: Human, dt: number) {
+    if (h.action === 'fight') return this.fightStep(h, dt);
+    if (h.action === 'hunt') return this.huntStep(h, dt);
+    if (!h.hasTarget) return;
+    const dx = h.tx - h.x;
+    const dy = h.ty - h.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 0.35) return this.move(h, dx / d, dy / d, dt, d);
+
+    const w = this.world;
+    const t = h.targetIdx;
+    const v = h.village >= 0 ? this.villages[h.village] : null;
+    const era = v ? ERAS[v.era] : ERAS[0];
+    const done = () => {
+      h.hasTarget = false;
+      h.think = 0;
+    };
+
+    switch (h.action) {
+      case 'rest':
+      case 'retreat':
+        // Arrived: stay inside the house, or by the village campfire.
+        if (w.cover[t] !== Cover.HOUSE && !(v && t === idx(v.cx, v.cy))) return done();
+        h.hasTarget = false;
+        if (v && h.hunger > 0.5 && v.food >= 1) {
+          v.food -= 1;
+          h.hunger = Math.max(0, h.hunger - 0.5);
+        }
+        return;
+      case 'pray':
+        h.hasTarget = false;
+        return;
+      case 'eat':
+        if (v && v.food >= 1) {
+          v.food -= 1;
+          h.hunger = Math.max(0, h.hunger - 0.6);
+          h.thought = 'Ăn no rồi!';
+        }
+        return done();
+      case 'harvest': {
+        h.work += dt;
+        if (h.work < 1.2) return;
+        const c = w.cover[t];
+        const traits = v?.culture.traits;
+        if (c === Cover.FARM && w.timer[t] >= 0.8) {
+          w.timer[t] = 0;
+          const civic = v ? (v.has('mill') ? 1.25 : 1) * (v.has('granary') ? 1.1 : 1) * (v.has('factory') ? 1.3 : 1) : 1;
+          const gain = Math.round(4 * era.yield * (traits?.farm ?? 1) * civic);
+          if (h.hunger > 0.5) {
+            h.hunger -= 0.5;
+            h.carryFood += gain - 1;
+          } else h.carryFood += gain;
+        } else if (c === Cover.FOREST || this.foodAt(t) === 'fish') {
+          const k = c === Cover.FOREST ? (traits?.hunt ?? 1) : (traits?.fish ?? 1) * (v?.has('dock') ? 1.5 : 1);
+          if (h.hunger > 0.5) h.hunger -= 0.4;
+          else h.carryFood += Math.max(1, Math.round(k * era.yield * 0.8));
+          if (c === Cover.FOREST && rand() < 0.2) w.cover[t] = Cover.NONE;
+        }
+        return done();
+      }
+      case 'chop':
+        h.work += dt;
+        if (h.work < 1.5) return;
+        if (w.cover[t] === Cover.FOREST) {
+          w.cover[t] = Cover.NONE;
+          h.carryWood += 2 + Math.floor(v ? v.era / 2 : 0) + (v?.has('factory') ? 2 : 0);
+        }
+        return done();
+      case 'farm':
+        h.work += dt;
+        if (h.work < 1.5) return;
+        if (v && w.cover[t] === Cover.NONE && !w.isWater(t)) {
+          w.cover[t] = Cover.FARM;
+          w.owner[t] = v.id;
+          w.timer[t] = 0;
+          v.farms.add(t);
+        }
+        return done();
+      case 'build':
+        h.work += dt;
+        if (h.work < 2.5) return;
+        if (v && v.wood >= era.houseWood && w.cover[t] === Cover.NONE && !w.isWater(t)) {
+          const kind = this.nextBuilding(v, t);
+          const cost = kind === 'house' ? era.houseWood : era.houseWood * 2;
+          if (kind && v.wood >= cost) {
+            w.cover[t] = Cover.HOUSE;
+            w.owner[t] = v.id;
+            w.timer[t] = v.era; // buildings remember the era they were built in
+            w.building[t] = kindIndex(kind);
+            w.road[t] = 0;
+            if (kind === 'house') v.houses.add(t);
+            else {
+              v.buildings.set(t, kindIndex(kind));
+              this.chronicle(v, `🏗️ ${v.name} xây ${SPECIAL_LABEL[kind]}.`, false);
+            }
+            v.wood -= cost;
+            this.carveRoad(v, t);
+          }
+        }
+        return done();
+      case 'raid': {
+        h.work += dt;
+        if (h.work < 1.5) return;
+        const owner = w.owner[t];
+        const enemy = owner >= 0 ? this.villages[owner] : null;
+        if (v && enemy && v.enemies.has(enemy.id) && w.cover[t] === Cover.HOUSE) {
+          const loot = Math.min(enemy.food, 5);
+          enemy.food -= loot;
+          v.food += loot;
+          if (v.era >= 3) {
+            w.owner[t] = v.id;
+            this.transferBuilding(t, enemy, v);
+          } else w.ignite(t);
+        }
+        return done();
+      }
+      case 'deliver':
+        if (v) {
+          v.food += h.carryFood;
+          v.wood += h.carryWood;
+        }
+        h.carryFood = 0;
+        h.carryWood = 0;
+        return done();
+      case 'flee':
+      case 'swim':
+        h.hasTarget = false;
+        h.think = 0.1;
+        return;
+      default:
+        return done();
+    }
+  }
+
+  private fightStep(h: Human, dt: number) {
+    const f = h.foe;
+    if (!f || f.dead || f.inside) {
+      h.foe = null;
+      h.hasTarget = false;
+      h.action = 'idle';
+      h.think = 0;
+      return;
+    }
+    const dx = f.x - h.x;
+    const dy = f.y - h.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 14) {
+      h.foe = null;
+      h.action = 'idle';
+      h.think = 0;
+      return;
+    }
+    const v = h.village >= 0 ? this.villages[h.village] : null;
+    const era = ERAS[v?.era ?? 0];
+    if (d > era.range * 0.9) {
+      h.tx = f.x;
+      h.ty = f.y;
+      this.move(h, dx / d, dy / d, dt, d - era.range * 0.8);
+      return;
+    }
+    h.attackCd -= dt;
+    if (h.attackCd > 0) return;
+    h.attackCd = 0.8 + rand() * 0.5;
+    const fv = f.village >= 0 ? this.villages[f.village] : null;
+    const atk = era.attack * (v?.culture.traits.attack ?? 1) * (h.role === 'soldier' ? 1.2 : 0.8) * (v && v.blessWar > 0 ? 1.5 : 1) * (v?.has('smithy') ? 1.15 : 1);
+    const home = fv && Math.hypot(f.x - fv.cx, f.y - fv.cy) < fv.radius ? 1.2 : 1;
+    const arm = ERAS[fv?.era ?? 0].armor * (fv?.culture.traits.defense ?? 1) * home * (fv?.has('barracks') ? 1.1 : 1);
+    f.health -= 0.11 * (atk / arm) * (0.6 + rand() * 0.8);
+    f.harm = 'tử trận';
+    f.lastHitBy = h.village;
+    if (era.range > 1.5) this.shots.push({ x1: h.x, y1: h.y, x2: f.x, y2: f.y, t: 0.15 });
+    else this.clashes.push({ x: (h.x + f.x) / 2, y: (h.y + f.y) / 2, t: 0.25 });
+    if (f.action !== 'fight' && f.age >= ADULT && f.health > 0.3) {
+      f.foe = h;
+      this.chase(f, 'fight', h.x, h.y, 'Bị tấn công! Đánh trả!');
+    }
+  }
+
+  private huntStep(h: Human, dt: number) {
+    const a = h.prey;
+    if (!a || a.dead) {
+      h.prey = null;
+      h.action = 'idle';
+      h.hasTarget = false;
+      h.think = 0;
+      return;
+    }
+    const dx = a.x - h.x;
+    const dy = a.y - h.y;
+    const d = Math.hypot(dx, dy);
+    h.stuck += dt;
+    if (d > 18 || h.stuck > 14) {
+      h.prey = null;
+      h.action = 'idle';
+      h.think = 0;
+      h.thought = 'Con thú chạy mất rồi...';
+      return;
+    }
+    if (d > 1.1) {
+      h.tx = a.x;
+      h.ty = a.y;
+      this.move(h, dx / d, dy / d, dt, d - 0.8, false);
+      return;
+    }
+    h.attackCd -= dt;
+    if (h.attackCd > 0) return;
+    h.attackCd = 0.8;
+    const v = h.village >= 0 ? this.villages[h.village] : null;
+    a.hp -= 0.4 * ERAS[v?.era ?? 0].attack * (v?.culture.traits.hunt ?? 1);
+    if (a.hp > 0) return;
+    a.dead = true;
+    this.stats.hunted++;
+    const meat = Math.round((a.kind === 'deer' ? 5 : 2) * ERAS[v?.era ?? 0].yield * (v?.culture.traits.hunt ?? 1));
+    if (h.hunger > 0.5) {
+      h.hunger = Math.max(0, h.hunger - 0.6);
+      h.carryFood += meat - 2;
+    } else h.carryFood += meat;
+    h.thought = a.kind === 'deer' ? 'Săn được hươu rồi!' : 'Đuổi được sói rồi!';
+    h.prey = null;
+    h.action = 'idle';
+    h.think = 0;
+  }
+
+  private move(h: Human, nx: number, ny: number, dt: number, dist: number, trackStuck = true) {
+    const w = this.world;
+    const ci = idx(Math.floor(h.x), Math.floor(h.y));
+    const swimming = w.isWater(ci) && !w.isIce(ci);
+    const v = h.village >= 0 ? this.villages[h.village] : null;
+    let speed = 2.6 * (v?.culture.traits.speed ?? 1) * (v && v.era >= 4 ? 1.25 : 1);
+    if (w.height[ci] > HILL_MAX) speed *= 0.5;
+    if (w.snow[ci] > 0.5) speed *= 0.6;
+    if (swimming) speed *= 0.6;
+    if (h.action === 'flee' || h.action === 'swim' || h.action === 'fight' || h.action === 'hunt') speed *= 1.4;
+    const step = Math.min(speed * dt, Math.max(0, dist));
+    const base = Math.atan2(ny, nx);
+
+    for (const off of OFFSETS) {
+      const a = base + off * h.turn;
+      const px = h.x + Math.cos(a) * step;
+      const py = h.y + Math.sin(a) * step;
+      if (px < 0 || py < 0 || px >= W || py >= H) continue;
+      const j = idx(Math.floor(px), Math.floor(py));
+      if (j !== ci && w.isDanger(j)) continue;
+      if (w.isWater(j) && !w.isIce(j) && !swimming && j !== ci) continue;
+      h.x = px;
+      h.y = py;
+      break;
+    }
+
+    if (!trackStuck) return;
+    if (dist < h.lastDist - 0.05) {
+      h.lastDist = dist;
+      h.stuck = 0;
+    } else {
+      h.stuck += dt;
+      if (h.stuck > 2.5) h.turn = -h.turn;
+      if (h.stuck > 5) {
+        h.avoid = h.targetIdx;
+        h.avoidUntil = w.time + 30;
+        h.hasTarget = false;
+        if (h.action === 'fight') h.action = 'idle';
+        h.think = 0;
+        h.stuck = 0;
+        h.heading = rand() * Math.PI * 2;
+      }
+    }
+  }
+
+  // ---------- Save / load ----------
+
+  /** Everything needed to rebuild this world, as JSON-safe data (typed arrays separately). */
+  snapshot() {
+    const w = this.world;
+    return {
+      version: 1,
+      sim: {
+        godNames: this.godNames,
+        gods: this.gods,
+        humans: this.humans.map((h) => ({ ...h, foe: undefined, prey: undefined, foeId: h.foe?.id ?? -1, preyId: h.prey?.id ?? -1 })),
+        claims: [...this.claims].filter(([, h]) => !h.dead).map(([c, h]) => [c, h.id]),
+        villages: this.villages,
+        wars: this.wars,
+        wishes: this.wishes,
+        log: this.log,
+        milestones: this.milestones,
+        achieved: this.achieved,
+        stats: this.stats,
+        voyages: this.voyages,
+        nextId: this.nextId,
+        wishId: this.wishId,
+        startTime: this.startTime,
+        nextBand: this.nextBand,
+        stepNo: this.stepNo,
+        seed: this.seed,
+        randState: randomState(),
+        acc: this.acc,
+        slowTimer: this.slowTimer,
+      },
+      world: {
+        seaLevel: w.seaLevel,
+        temperature: w.temperature,
+        weather: w.weather,
+        autoWeather: w.autoWeather,
+        weatherTimer: w.weatherTimer,
+        regionWeather: w.regionWeather,
+        regionTemp: [...w.regionTemp],
+        regionTimer: [...w.regionTimer],
+        time: w.time,
+        dayLength: w.dayLength,
+        phase: w.phase,
+        vents: w.vents,
+      },
+      animals: this.animals.list.map((a) => ({
+        ...a,
+        prey: undefined,
+        preyId: a.prey ? (a.prey as unknown as { id: number }).id : -1,
+        preyIsAnimal: a.prey instanceof Animal,
+      })),
+      arrays: {
+        height: w.height,
+        cover: w.cover,
+        snow: w.snow,
+        timer: w.timer,
+        owner: w.owner,
+        jitter: w.jitter,
+        latChill: w.latChill,
+        building: w.building,
+        road: w.road,
+      },
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  restore(data: any) {
+    const w = this.world;
+    for (const [k, arr] of Object.entries(data.arrays as Record<string, ArrayLike<number>>)) {
+      (w as unknown as Record<string, { set(a: ArrayLike<number>): void }>)[k].set(arr);
+    }
+    const { regionTemp, regionTimer, ...rest } = data.world;
+    Object.assign(w, rest);
+    if (regionTemp) w.regionTemp.set(regionTemp);
+    if (regionTimer) w.regionTimer.set(regionTimer);
+    w.events.length = 0;
+    const d = data.sim;
+    this.godNames = d.godNames ?? [d.godName ?? 'Đấng Sáng Thế', 'Đấng Hắc Nguyệt'];
+    this.gods = d.gods ?? 1;
+    this.villages = d.villages.map((o: Record<string, unknown>) => {
+      // Older saves had a single faith value.
+      if ('faith' in o) {
+        o.faiths = [o.faith as number, 15];
+        o.patron = o.religion === 'god' ? 0 : -1;
+        delete o.faith;
+        delete o.religion;
+      }
+      return Object.assign(Object.create(Village.prototype), o, {
+        culture: cultureById(o.culture as string),
+        jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
+      });
+    });
+    this.humans = d.humans.map((o: Record<string, unknown>) => Object.assign(Object.create(Human.prototype), o, { foe: null, prey: null }));
+    this.animals.list = data.animals.map((o: Record<string, unknown>) => Object.assign(Object.create(Animal.prototype), o, { prey: null }));
+    // Re-link who was fighting, hunting or chasing whom.
+    const people = new Map(this.humans.map((h) => [h.id, h]));
+    const beasts = new Map(this.animals.list.map((a) => [a.id, a]));
+    for (const h of this.humans as (Human & { foeId?: number; preyId?: number })[]) {
+      h.foe = people.get(h.foeId ?? -1) ?? null;
+      h.prey = beasts.get(h.preyId ?? -1) ?? null;
+    }
+    for (const a of this.animals.list as (Animal & { preyId?: number; preyIsAnimal?: boolean })[]) {
+      a.prey = (a.preyIsAnimal ? beasts.get(a.preyId ?? -1) : people.get(a.preyId ?? -1)) ?? null;
+    }
+    this.animals.resume(Math.max(0, ...this.animals.list.map((a) => a.id)) + 1);
+    this.wars = d.wars;
+    this.wishes = d.wishes;
+    this.log = d.log;
+    this.milestones = d.milestones;
+    this.achieved = d.achieved;
+    Object.assign(this.stats, d.stats);
+    this.voyages = d.voyages ?? [];
+    this.nextId = d.nextId;
+    this.wishId = d.wishId;
+    this.startTime = d.startTime;
+    this.nextBand = d.nextBand;
+    this.stepNo = d.stepNo ?? 0;
+    this.seed = d.seed ?? 0;
+    this.acc = 0;
+    this.slowTimer = d.slowTimer ?? 0;
+    if (d.randState !== undefined) seedRandom(d.randState);
+    this.pending.clear();
+    this.byId = new Map(this.humans.map((h) => [h.id, h]));
+    this.claims = new Map(((d.claims ?? []) as [number, number][]).filter(([, id]) => people.has(id)).map(([c, id]) => [c, people.get(id)!]));
+    this.throttle.clear();
+    this.strikes = [];
+    this.shots = [];
+    this.clashes = [];
+    this.impacts = [];
+    this.toasts = [];
+    this.selectedHuman = null;
+    this.selectedVillage = null;
+    this.warFrom = null;
+    this.generation++; // the renderer redraws everything
+  }
+
+  // ---------- Queries for the UI ----------
+
+  pick(x: number, y: number) {
+    const best = this.humanGrid.nearest(x, y, 2.5, () => true);
+    this.selectedHuman = best;
+    if (best) {
+      this.selectedVillage = best.village >= 0 ? this.villages[best.village] : null;
+      return;
+    }
+    const i = idx(Math.floor(x), Math.floor(y));
+    const owner = this.world.owner[i];
+    if (owner >= 0 && this.villages[owner]?.alive) {
+      this.selectedVillage = this.villages[owner];
+      return;
+    }
+    this.selectedVillage = this.villageNear(x, y, 20);
+  }
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
+    <title>Chúa Trời</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar"></header>
+      <main>
+        <div id="game"><div id="toasts"></div></div>
+        <aside id="panel">
+          <section id="stats"></section>
+          <section class="god">
+            <label>Danh xưng của bạn <input id="god-name" maxlength="32" /></label>
+          </section>
+          <section id="inspect"></section>
+          <nav id="tabs">
+            <button data-tab="wishes">🙏 Ước nguyện</button>
+            <button data-tab="tribes">🏘️ Bộ tộc</button>
+            <button data-tab="history">📜 Sử</button>
+            <button data-tab="achievements">🏆 Thành tựu</button>
+          </nav>
+          <section id="tab-body"></section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

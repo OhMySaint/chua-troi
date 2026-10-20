@@ -397,7 +397,7 @@ export class WorldScene extends Phaser.Scene {
     // Cities that changed hands: repaint their land now and wave the new banner for a moment.
     for (const r of sim.repaints.splice(0)) {
       this.markDirty(r.x, r.y, r.r);
-      this.banners.push({ ...r, t: 0 });
+      if (r.color >= 0) this.banners.push({ ...r, t: 0 });
       this.borders.invalidate();
     }
     this.borders.update(dt, sim, cam);
@@ -576,10 +576,12 @@ export class WorldScene extends Phaser.Scene {
       const R = v.radius * CELL;
       if (!this.inView(x, y, R + 40)) continue;
       const atWar = v.enemies.size > 0;
-      // Land and borders are drawn by the border layer; a city at war pulses red.
+      // Every city keeps a thin ring in its nation's colour; a city at war pulses red.
+      g.lineStyle(Math.max(1, 1.5 / zoom), v.color, 0.7);
+      g.strokeCircle(x, y, R);
       if (atWar) {
-        g.lineStyle(Math.max(1, 2 / zoom), 0xff3030, 0.5 + 0.3 * Math.sin(t / 200));
-        g.strokeCircle(x, y, R);
+        g.lineStyle(Math.max(1, 2 / zoom), 0xff3030, 0.4 + 0.3 * Math.sin(t / 200));
+        g.strokeCircle(x, y, R + 3 / zoom);
       }
       if (v.era >= 2 && v.era <= 3 && v.pop >= 12) {
         // Palisade (iron age) or stone wall with towers (medieval).
@@ -1212,14 +1214,21 @@ export class WorldScene extends Phaser.Scene {
     // Capitals first (they carry the nation's name), then the larger cities.
     const order = [...sim.villages].sort((a, b) => Number(b.isCapital) - Number(a.isCapital) || b.pop - a.pop);
     const visible = new Set<number>();
+    // Where each label sits: above the city, or below it when the space above is taken.
+    const below = new Set<number>();
     for (const v of order) {
       if (!v.alive) continue;
-      const w = (v.name.length + 10) * 4.5 / zoom;
+      const w = (v.name.length + 14) * 4.5 / zoom;
       const h = 14 / zoom;
       const x = v.cx * CELL;
-      const y = v.cy * CELL;
-      if (placed.some(([px, py, pw, ph]) => Math.abs(px - x) < (pw + w) / 2 && Math.abs(py - y) < (ph + h) / 2)) continue;
-      placed.push([x, y, w, h]);
+      const free = (y: number) => !placed.some(([px, py, pw, ph]) => Math.abs(px - x) < (pw + w) / 2 && Math.abs(py - y) < (ph + h) / 2);
+      const above = v.cy * CELL - 20 / zoom;
+      const under = v.cy * CELL + (v.radius * CELL) * 0.6 + 14 / zoom;
+      if (free(above)) placed.push([x, above, w, h]);
+      else if (free(under)) {
+        placed.push([x, under, w, h]);
+        below.add(v.id);
+      } else continue;
       visible.add(v.id);
     }
     for (const v of sim.villages) {
@@ -1248,7 +1257,8 @@ export class WorldScene extends Phaser.Scene {
         label.setText(`${many ? '👑 ' : ''}${ERAS[v.era].icon} ${v.name}${many ? ` [${abbr(v.base)}]` : ''} · ${many ? `${formatPop(v.people)} (cả nước ${formatPop(total)})` : formatPop(total)}${flags}`);
       } else label.setText(`[${abbr(v.capital.base)}] ${v.base} · ${formatPop(v.people)}${v.enemies.size ? ' ⚔️' : ''}`);
       label.setColor('#' + v.color.toString(16).padStart(6, '0'));
-      label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
+      if (below.has(v.id)) label.setPosition(v.cx * CELL + 4, v.cy * CELL + v.radius * CELL * 0.6 + 22 / zoom);
+      else label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
     }
     for (const [id, label] of this.labels) if (!sim.villages[id]) label.setVisible(false);
   }

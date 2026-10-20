@@ -1212,7 +1212,10 @@ export class Sim {
       for (const i of v.houses) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.houses.delete(i);
       for (const i of v.buildings.keys()) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.buildings.delete(i);
       for (const i of v.farms) if (w.cover[i] !== Cover.FARM || w.owner[i] !== v.id) v.farms.delete(i);
-      if (!v.alive) continue;
+      if (!v.alive) {
+        if (v.houses.size || v.farms.size) this.abandoned(v, dt);
+        continue;
+      }
 
       if (v.pop === 0) {
         const heir = this.villages.filter((o) => o.alive && o !== v && o.nation === v.id && o.pop > 0).sort((a, b) => b.pop - a.pop)[0];
@@ -1716,6 +1719,61 @@ export class Sim {
     city.partners.clear();
     city.allies.clear();
     city.pacts.clear();
+  }
+
+  /**
+   * An empty town: a living city next to it (often the conqueror) moves in and takes it over;
+   * otherwise its houses and fields crumble away.
+   */
+  private abandoned(v: Village, dt: number) {
+    const w = this.world;
+    v.jobTimer -= dt;
+    if (v.jobTimer > 0) return;
+    v.jobTimer = 3;
+    let heir: Village | null = null;
+    let bd = Infinity;
+    for (const o of this.villages) {
+      if (!o.alive || o === v) continue;
+      const d = Math.hypot(o.cx - v.cx, o.cy - v.cy);
+      if (d < o.radius + v.radius + 12 && d < bd) {
+        bd = d;
+        heir = o;
+      }
+    }
+    if (heir) {
+      for (const i of v.houses) {
+        heir.houses.add(i);
+        w.owner[i] = heir.id;
+      }
+      for (const i of v.farms) {
+        heir.farms.add(i);
+        w.owner[i] = heir.id;
+      }
+      for (const [i, k] of v.buildings) heir.buildings.set(i, k);
+      v.houses.clear();
+      v.farms.clear();
+      v.buildings.clear();
+      v.absorbedBy = heir.id;
+      heir.reach += 4;
+      this.repaints.push({ x: v.cx, y: v.cy, r: v.radius + 8, color: heir.color });
+      this.chronicle(heir, `🏘️ ${heir.name} tiếp quản ${v.base} bỏ hoang, đưa dân tới ở.`);
+      return;
+    }
+    // Nobody to move in: a few homes and fields fall to ruin each time.
+    const crumble = (set: Set<number>) => {
+      let n = Math.max(1, Math.ceil(set.size * 0.04));
+      for (const i of [...set]) {
+        if (n-- <= 0) break;
+        set.delete(i);
+        v.buildings.delete(i);
+        w.cover[i] = Cover.NONE;
+        w.building[i] = 0;
+        w.owner[i] = -1;
+      }
+    };
+    crumble(v.houses);
+    crumble(v.farms);
+    this.repaints.push({ x: v.cx, y: v.cy, r: v.radius + 4, color: -1 });
   }
 
   /** Two cities of one nation that have grown into each other become one city. */

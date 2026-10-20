@@ -990,6 +990,7 @@ export class Sim {
       if (this.slowTimer >= 5) {
         this.slowTimer = 0;
         this.diplomacyTick();
+        this.mergeCities();
         this.checkAchievements();
       }
     }
@@ -1211,7 +1212,7 @@ export class Sim {
       }
       if (v.birthTimer <= 0) {
         v.birthTimer = (8 + rand() * 6) / (1 + v.pop / 30);
-        if (v.pop >= 2 && v.pop < v.cap && v.pop < (v.era >= 1 ? 40 + v.era * 5 : 70) && v.food >= v.pop * 0.6 + 2 && w.localTemp(center) > 0) {
+        if (v.pop >= 2 && v.pop < v.cap && v.pop < (v.era >= 1 ? 60 + v.era * 15 : 70) && v.food >= v.pop * 0.6 + 2 && w.localTemp(center) > 0) {
           const house = pick([...v.houses]);
           if (this.spawnHuman(cx(house) + 0.5, cy(house) + 0.5, v.id, true)) {
             v.food -= 2;
@@ -1620,6 +1621,44 @@ export class Sim {
     city.partners.clear();
     city.allies.clear();
     city.pacts.clear();
+  }
+
+  /** Two cities of one nation that have grown into each other become one city. */
+  private mergeCities() {
+    const w = this.world;
+    for (const a of this.villages) {
+      if (!a.alive) continue;
+      for (const b of this.villages) {
+        if (b === a || !b.alive || b.nation !== a.nation) continue;
+        if (Math.hypot(a.cx - b.cx, a.cy - b.cy) > (a.radius + b.radius) * 0.75) continue;
+        // The larger absorbs the smaller (the capital always stays the capital).
+        let [big, small] = a.pop + a.houses.size >= b.pop + b.houses.size ? [a, b] : [b, a];
+        if (small.isCapital) [big, small] = [small, big];
+        for (const h of this.humans) if (h.village === small.id) h.village = big.id;
+        for (const i of small.houses) {
+          big.houses.add(i);
+          w.owner[i] = big.id;
+        }
+        for (const i of small.farms) {
+          big.farms.add(i);
+          w.owner[i] = big.id;
+        }
+        for (const [i, k] of small.buildings) big.buildings.set(i, k);
+        big.pop += small.pop;
+        big.food += small.food;
+        big.wood += small.wood;
+        big.reach = Math.max(big.reach, small.reach) + 2;
+        big.tech = Math.max(big.tech, small.tech);
+        small.houses.clear();
+        small.farms.clear();
+        small.buildings.clear();
+        small.pop = 0;
+        small.alive = false;
+        small.absorbedBy = big.id;
+        this.chronicle(big, `🏙️ ${small.base} và ${big.base} lớn lên chạm vào nhau, hợp thành một đô thị lớn mang tên ${big.base}.`);
+        return; // one merge per pass keeps things simple and deterministic
+      }
+    }
   }
 
   /** The seat of a nation moves to another of its cities (keeps its name, wars, friends). */
@@ -2461,6 +2500,14 @@ export class Sim {
     const r = v.radius;
     const center = idx(v.cx, v.cy);
     const farmMin = v.floods > 1 ? v.minBuildHeight - 0.02 : w.seaLevel + 0.03;
+    // Foreign cities whose land may overlap ours: where they are nearer (edge to edge), the land is theirs.
+    const rivals = this.villages.filter((o) => o.alive && o !== v && o.nation !== v.nation && Math.hypot(o.cx - v.cx, o.cy - v.cy) < r + o.radius + 8);
+    const foreign = (x: number, y: number, d2: number) => {
+      if (!rivals.length) return false;
+      const mine = Math.sqrt(d2) - r;
+      for (const o of rivals) if (Math.hypot(o.cx - x, o.cy - y) - o.radius < mine) return true;
+      return false;
+    };
     for (let dy = -r; dy <= r; dy++) {
       const y = v.cy + dy;
       if (y < 0 || y >= H) continue;
@@ -2476,7 +2523,7 @@ export class Sim {
         } else if (c === Cover.FOREST) {
           j.trees.push(i);
           if (v.fireWary && this.nearHouse(i, v, 2)) j.firebreak.push(i);
-        } else if (c === Cover.NONE && i !== center) {
+        } else if (c === Cover.NONE && i !== center && !foreign(x, y, d2)) {
           if (this.isShore(i)) j.fish.push(i);
           const h = w.height[i];
           const square = Math.abs(dx) <= 4 && dy >= -2 && dy <= 1; // palace + temple plaza
@@ -2498,9 +2545,10 @@ export class Sim {
    * justifies it; it draws back if it shrinks. Where two cities meet, the nearer one holds the land.
    */
   private spread(v: Village) {
-    const target = Math.sqrt(v.houses.size + v.buildings.size + v.farms.size * 0.5) * 2.2;
+    // Generous: a great city may spread to ~80 cells across its core (radius up to era core + 60).
+    const target = Math.min(60, Math.sqrt(v.houses.size + v.buildings.size + v.farms.size * 0.5) * 3);
     const short = v.jobs.houseSites.length < 10 || v.jobs.farmSites.length < 6;
-    if (v.reach < target && short) v.reach = Math.min(target, v.reach + 0.5);
+    if (v.reach < target && short) v.reach = Math.min(target, v.reach + 1);
     else if (v.reach > target) v.reach = Math.max(target, v.reach - 0.5);
   }
 

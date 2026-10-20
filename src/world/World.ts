@@ -324,7 +324,7 @@ export class World {
     this.rebuildWeather();
     // Lightning under storm cells.
     for (const s of this.systems) {
-      if (s.kind === 'storm' && rand() < 0.012 * this.strength(s) * (s.r / 50)) this.strikeIn(s.x, s.y, s.r * 0.6);
+      if (s.kind === 'storm' && rand() < 0.005 * this.strength(s) * (s.r / 50)) this.strikeIn(s.x, s.y, s.r * 0.6);
     }
   }
 
@@ -608,10 +608,11 @@ export class World {
           fires++;
           this.timer[i] -= dt;
           if (raining && rand() < 0.3) this.timer[i] = 0;
-          for (let k = 0; k < 8; k++) {
+          // Fire creeps slowly in ordinary weather, races in a drought, and barely moves in the rain.
+          for (let k = 0; k < 3; k++) {
             const j = i + NEIGHBORS[(rand() * 4) | 0];
             if (j < 0 || j >= N || !this.canBurn(j)) continue;
-            const p = (raining ? 0.06 : 0.35) * (this.snow[j] > 0.3 ? 0.1 : 1);
+            const p = (raining ? 0.01 : drought ? 0.16 : 0.05) * (this.snow[j] > 0.3 ? 0.1 : 1);
             if (rand() < p) this.ignite(j);
           }
           if (this.timer[i] <= 0) {
@@ -669,7 +670,7 @@ export class World {
           }
           break;
         case Cover.FOREST:
-          if ((wr === 'sun' && temp > 22 && rand() < 0.000016) || (drought && rand() < 0.0004)) this.ignite(i);
+          if ((wr === 'sun' && temp > 26 && rand() < 0.000001) || (drought && rand() < 0.00003)) this.ignite(i);
           break;
       }
     }
@@ -687,7 +688,8 @@ export class World {
       const tall = this.cover[i] === Cover.FOREST || this.cover[i] === Cover.HOUSE || this.height[i] > HILL_MAX;
       if (!tall && tries < 6) continue;
       this.events.push({ type: 'lightning', x: i % W, y: Math.floor(i / W) });
-      if (this.canBurn(i)) this.ignite(i);
+      // Most strikes only scorch; storm rain usually stops a fire before it starts.
+      if (this.canBurn(i) && rand() < 0.3) this.ignite(i);
       return;
     }
   }

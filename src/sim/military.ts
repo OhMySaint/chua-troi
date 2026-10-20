@@ -43,4 +43,23 @@ export interface Airstrike {
   /** Attacking city id. */
   from: number;
   color: number;
+  /** Age of the aircraft (4 biplane, 5 jet, 6 drone). */
+  era?: number;
+}
+
+/** A war fleet under way: galleys and galleons land troops, warships shell the coast, carriers launch planes. */
+export interface Fleet {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  start: number;
+  end: number;
+  era: number;
+  color: number;
+  /** Home city id. */
+  from: number;
+  /** Target city id. */
+  target: number;
+  carrier: boolean;
 }

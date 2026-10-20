@@ -37,6 +37,69 @@ const CLOUD: Record<Weather, number> = { sun: 0, rain: 0.16, storm: 0.32, snow: 
 const BRUSH_TOOLS = new Set<Tool>(['raise', 'lower', 'smooth', 'water', 'forest', 'fire']);
 const CLICK_TOOLS = new Set<Tool>(['volcano', 'quake', 'meteor', 'war', 'peace', 'inspect']);
 
+/** A warship of its age, facing dir (1 right, -1 left), drawn around (px, py). */
+function drawWarship(g: Phaser.GameObjects.Graphics, px: number, py: number, era: number, color: number, dir: number, carrier: boolean, t: number) {
+  const R = (x: number, y: number, w: number, h: number, c: number, a = 1) => {
+    g.fillStyle(c, a);
+    g.fillRect(px + (dir > 0 ? x : -x - w), py + y, w, h);
+  };
+  const bob = Math.floor(t / 300 + px) % 2;
+  py += bob;
+  if (era >= 6) {
+    // A hovering space cruiser over the waves, with its shadow below.
+    g.fillStyle(0x000000, 0.2);
+    g.fillEllipse(px, py + 6, 26, 4);
+    R(-12, -10, 24, 4, 0x3a4050);
+    R(-8, -13, 14, 3, 0x5a6478);
+    R(10, -9, 3, 2, 0x7af0ff, 0.6 + 0.4 * Math.sin(t / 100));
+    R(-4, -12, 4, 1, color);
+    return;
+  }
+  if (carrier) {
+    R(-16, -3, 32, 4, 0x5a6068);
+    R(-15, -4, 30, 1, 0x7a8088);
+    R(6, -9, 5, 5, 0x4a5058);
+    R(-10, -4, 12, 1, 0xe8e8e8, 0.6); // deck marking
+    R(7, -10, 3, 1, color);
+    return;
+  }
+  if (era <= 2) {
+    // Galley: low hull, a square sail, oars beating.
+    R(-9, -2, 18, 3, 0x6a4428);
+    R(8, -3, 3, 2, 0x6a4428);
+    R(-1, -12, 1, 10, 0x4a3018);
+    R(-5, -11, 9, 6, color);
+    for (let o = -6; o <= 6; o += 3) R(o, 1 + (Math.floor(t / 200 + o) % 2), 1, 2, 0x4a3018);
+    return;
+  }
+  if (era === 3) {
+    // Galleon: tall hull, three masts, gun ports.
+    R(-12, -3, 24, 5, 0x5a3a20);
+    R(-12, -5, 6, 2, 0x5a3a20);
+    for (const m of [-6, 0, 6]) {
+      R(m, -15, 1, 12, 0x3a2414);
+      R(m - 3, -14, 7, 4, 0xe8e0c8);
+      R(m - 3, -9, 7, 3, 0xe8e0c8);
+    }
+    R(-1, -17, 3, 2, color);
+    for (let o = -9; o <= 9; o += 4) R(o, -1, 2, 1, 0x1a1a1a);
+    return;
+  }
+  // Ironclad / destroyer: grey steel, turrets, funnel smoke.
+  const steel = era === 4 ? 0x4a4e54 : 0x6a7078;
+  R(-13, -3, 26, 4, steel);
+  R(11, -2, 4, 2, steel);
+  R(-4, -7, 8, 4, era === 4 ? 0x3a3e44 : 0x5a6068);
+  R(-10, -5, 4, 2, 0x2a2e34);
+  R(-7, -5, 4, 1, 0x2a2e34);
+  R(6, -5, 4, 2, 0x2a2e34);
+  R(9, -5, 4, 1, 0x2a2e34);
+  R(-1, -11, 3, 4, era === 4 ? 0x2a2a2a : 0x4a4e54);
+  R(0, -8, 2, 1, color);
+  g.fillStyle(0x9a9a9a, 0.35);
+  g.fillCircle(px - dir * 2, py - 14 - (Math.floor(t / 250) % 3), 3);
+}
+
 /** Short form of a nation's name for city labels: "Văn Lang" → "VL", "Athena" → "ATH". */
 function abbr(name: string) {
   const words = name.split(/\s+/).filter(Boolean);
@@ -558,18 +621,54 @@ export class WorldScene extends Phaser.Scene {
       const ang = Math.atan2(a.y2 - a.y1, a.x2 - a.x1);
       const c = Math.cos(ang);
       const sn = Math.sin(ang);
+      const era = a.era ?? 5;
+      // Biplanes fly low and small; jets high with a contrail; drones glow.
+      const alt = era === 4 ? 30 : 48;
+      const len = era === 4 ? 5 : 7;
       g.fillStyle(0x000000, 0.18);
-      g.fillEllipse(x + 8, y + 6, 16, 5);
-      g.lineStyle(2, 0xffffff, 0.3);
-      g.lineBetween(x, y - 48, x - c * 70, y - 48 - sn * 70);
-      g.fillStyle(a.nuke ? 0xe8e8e8 : 0x5a6470, 1);
-      for (let s2 = -7; s2 <= 7; s2++) g.fillRect(x + c * s2 - 1, y - 48 + sn * s2 - 1, 3, 3);
-      for (let s2 = -7; s2 <= 7; s2++) g.fillRect(x - sn * s2 - 1, y - 48 + c * s2 - 1, 2, 2);
+      g.fillEllipse(x + 8, y + 6, len * 2 + 2, 5);
+      if (era >= 5) {
+        g.lineStyle(2, era >= 6 ? 0x9ae6ff : 0xffffff, 0.3);
+        g.lineBetween(x, y - alt, x - c * 70, y - alt - sn * 70);
+      }
+      const body = a.nuke ? 0xe8e8e8 : era === 4 ? 0x8a6a3a : era >= 6 ? 0x2a3040 : 0x5a6470;
+      g.fillStyle(body, 1);
+      for (let s2 = -len; s2 <= len; s2++) g.fillRect(x + c * s2 - 1, y - alt + sn * s2 - 1, 3, 3);
+      // Wings: a biplane has two stacked, a jet one swept pair.
+      const span = era === 4 ? 6 : 7;
+      for (let s2 = -span; s2 <= span; s2++) g.fillRect(x - sn * s2 - 1, y - alt + c * s2 - 1, 2, 2);
+      if (era === 4) for (let s2 = -span; s2 <= span; s2++) g.fillRect(x - sn * s2 + c * 2 - 1, y - alt + c * s2 + sn * 2 - 1, 2, 1);
+      if (era === 4 && Math.floor(t / 60) % 2) {
+        g.fillStyle(0xdddddd, 0.8);
+        g.fillRect(x + c * (len + 1) - 2, y - alt + sn * (len + 1) - 2, 4, 4);
+      }
+      if (era >= 6) {
+        g.fillStyle(0x7af0ff, 0.6 + 0.4 * Math.sin(t / 90));
+        g.fillCircle(x - c * len, y - alt - sn * len, 2.5);
+      }
       g.fillStyle(a.color, 1);
-      g.fillRect(x - c * 7 - 1, y - 48 - sn * 7 - 1, 3, 3);
+      g.fillRect(x - c * len - 1, y - alt - sn * len - 1, 3, 3);
       if (k > 0.85) {
         g.fillStyle(0x2a2a2a, 1);
-        g.fillRect(x - 1, y - 40 + (k - 0.85) * 240, 2, 4);
+        g.fillRect(x - 1, y - alt + 8 + (k - 0.85) * 240, 2, 4);
+      }
+    }
+
+    // War fleets.
+    for (const f of sim.fleets) {
+      const k = Math.max(0, Math.min(1, (now0() - f.start) / (f.end - f.start)));
+      const x = Math.round((f.x1 + (f.x2 - f.x1) * k) * CELL);
+      const y = Math.round((f.y1 + (f.y2 - f.y1) * k) * CELL);
+      if (!this.inView(x, y, 60)) continue;
+      const dir = Math.sign(f.x2 - f.x1) || 1;
+      // Two or three ships sail together.
+      const n = f.carrier ? 1 : 3;
+      for (let s2 = 0; s2 < n; s2++) {
+        const ox = -dir * s2 * 22;
+        const oy = (s2 % 2 ? 1 : -1) * s2 * 9;
+        g.fillStyle(0xd8eef8, 0.5);
+        g.fillRect(x + ox - dir * 18, y + oy + 2, 8, 1);
+        drawWarship(g, x + ox, y + oy, f.era, f.color, dir, f.carrier, t);
       }
     }
 
@@ -1123,8 +1222,8 @@ export class WorldScene extends Phaser.Scene {
       if (v.isCapital) {
         const total = sim.citiesOf(v).reduce((n, c) => n + c.people, 0);
         const many = sim.citiesOf(v).length > 1;
-        label.setText(`${many ? '👑 ' : ''}${ERAS[v.era].icon} ${v.name}${many ? ` [${abbr(v.base)}]` : ''} · ${formatPop(total)}${flags}`);
-      } else label.setText(`[${abbr(v.capital.base)}] ${v.base}${v.enemies.size ? ' ⚔️' : ''}`);
+        label.setText(`${many ? '👑 ' : ''}${ERAS[v.era].icon} ${v.name}${many ? ` [${abbr(v.base)}]` : ''} · ${many ? `${formatPop(v.people)} (cả nước ${formatPop(total)})` : formatPop(total)}${flags}`);
+      } else label.setText(`[${abbr(v.capital.base)}] ${v.base} · ${formatPop(v.people)}${v.enemies.size ? ' ⚔️' : ''}`);
       label.setColor('#' + v.color.toString(16).padStart(6, '0'));
       label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
     }

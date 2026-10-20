@@ -2,7 +2,7 @@ import { rand, randomState, seedRandom } from './rand';
 import { SPECIAL_KINDS, type Kind } from '../art/buildings';
 import { BASE_SEA, Cover, H, HILL_MAX, STEP, TICK, TICK_STEPS, W, YEAR, idx, roadTier } from '../world/constants';
 import type { Command } from './commands';
-import { type Airstrike, UNITS, type Unit, pickUnit } from './military';
+import { type Airstrike, type Fleet, UNITS, type Unit, pickUnit } from './military';
 import { World } from '../world/World';
 import { ACHIEVEMENTS } from './achievements';
 import { Animal, AnimalSystem } from './Animals';
@@ -248,6 +248,7 @@ export class Village {
   armyT = 0;
   slots = 0;
   airCd = 30;
+  navyCd = 40;
   kills = 0;
   losses = 0;
   annexed = 0;
@@ -298,6 +299,8 @@ export class Village {
   }
   /** Extra land the city has spread over beyond its era's core (grows as it needs room). */
   reach = 0;
+  /** Plots where homes were destroyed, waiting to be rebuilt. */
+  ruins: number[] = [];
   get radius() {
     return ERAS[this.era].radius + Math.floor(this.reach);
   }
@@ -349,6 +352,8 @@ export class Human {
   colonist = false;
   /** Set down by a god outside any land: wants to break new ground rather than join a village. */
   pioneer = false;
+  /** Set down by a god (rather than born): founds a people of the current age, with a story. */
+  godMade = false;
   /** Settlers travelling together share a band; they follow its leader and found one village. */
   band = -1;
   leftAt = 0;
@@ -451,6 +456,7 @@ export class Sim {
   impacts: { x: number; y: number; r: number; kind: string; t: number }[] = [];
   /** Bombers in flight (simulation state: they strike when they arrive). */
   airstrikes: Airstrike[] = [];
+  fleets: Fleet[] = [];
   voyages: { x1: number; y1: number; x2: number; y2: number; start: number; end: number; color: number; era: number }[] = [];
   shake = 0;
   log: LogEntry[] = [];
@@ -553,6 +559,7 @@ export class Sim {
     this.deaths.clear();
     this.voyages = [];
     this.airstrikes = [];
+    this.fleets = [];
     this.wars = [];
     this.warFrom = null;
     this.peaceFrom = null;
@@ -918,6 +925,7 @@ export class Sim {
         } else {
           // Outside: some seek the nearest village, others set out to found a place of their own.
           h.pioneer = rand() < 0.5;
+          h.godMade = true;
           h.leftAt = w.time;
         }
         break;
@@ -1093,6 +1101,10 @@ export class Sim {
       if (e.what === 'farm') {
         v.farms.delete(e.i);
         continue;
+      }
+      if (v.houses.has(e.i) && v.ruins.length < 300) {
+        if (!v.ruins.length && v.alive) this.chronicle(v, `🔨 Người dân ${v.name} dọn đống đổ nát, bắt tay xây dựng lại.`, false);
+        v.ruins.push(e.i);
       }
       v.houses.delete(e.i);
       v.buildings.delete(e.i);
@@ -2279,6 +2291,22 @@ export class Sim {
    * its nation, and how well defended. A lone outpost far from home is a tempting prize.
    * Returns [distance, our staging city, target, chosen for being isolated].
    */
+  /** True if the straight way from (x1,y1) to (x2,y2) crosses open sea (bridges and ice count as land). */
+  seaBetween(x1: number, y1: number, x2: number, y2: number) {
+    const w = this.world;
+    const n = Math.ceil(Math.hypot(x2 - x1, y2 - y1));
+    let wet = 0;
+    for (let k = 0; k <= n; k++) {
+      const x = Math.floor(x1 + ((x2 - x1) * k) / (n || 1));
+      const y = Math.floor(y1 + ((y2 - y1) * k) / (n || 1));
+      const i = idx(x, y);
+      if (w.isWater(i) && !w.canWalk(i)) {
+        if (++wet > 5) return true;
+      } else wet = 0;
+    }
+    return false;
+  }
+
   private pickTarget(cap: Village): [number, Village, Village, boolean] | null {
     const ours = this.citiesOf(cap);
     if (!ours.length) return null;
@@ -2303,7 +2331,9 @@ export class Sim {
       this.humanGrid.each(c.cx, c.cy, c.radius + 6, (h) => {
         if (h.role === 'soldier' && h.village >= 0 && this.villages[h.village]?.nation === c.nation) guards++;
       });
-      const score = d - Math.min(help, 200) * 0.7 + guards * 4 + c.pop * 0.3 - (c.isCapital ? 15 : 0);
+      // An army marches on land: a city across the sea is for the navy, not the infantry.
+      const overseas = this.seaBetween(from.cx, from.cy, c.cx, c.cy);
+      const score = d - Math.min(help, 200) * 0.7 + guards * 4 + c.pop * 0.3 - (c.isCapital ? 15 : 0) + (overseas ? 400 : 0);
       nearestD = Math.min(nearestD, d);
       if (score < bestScore) {
         bestScore = score;
@@ -2319,6 +2349,11 @@ export class Sim {
       cap.armyPhase = 'none';
       cap.armyTarget = -1;
       return;
+    }
+    // Now and then the generals reconsider, unless already laying siege.
+    if (cap.armyTarget >= 0 && cap.armyPhase !== 'siege' && rand() < dt / 25) {
+      const again = this.pickTarget(cap);
+      if (again && again[2].id !== cap.armyTarget) cap.armyTarget = -1;
     }
     let target = this.villages[cap.armyTarget];
     if (!target?.alive || !cap.hostileTo(target.id)) {
@@ -2348,6 +2383,9 @@ export class Sim {
         cap.armyPhase = 'march';
         this.chronicle(cap, `🚩 Quân đội ${cap.name} lên đường tiến đánh ${target.name}.`, false);
       }
+    } else if (cap.armyPhase === 'march' && this.seaBetween(cap.armyX, cap.armyY, target.cx, target.cy)) {
+      // The sea stands between the army and its goal: it waits on the shore while the fleet sails.
+      cap.navyCd = Math.min(cap.navyCd, 3);
     } else if (cap.armyPhase === 'march') {
       // The banner advances at a steady pace the whole column can follow.
       const step = Math.min(d, 1.4 * dt);
@@ -2356,20 +2394,86 @@ export class Sim {
       if (d < 5) cap.armyPhase = 'siege';
     }
 
-    // Modern nations send bombers — and, in desperation, the bomb.
-    if (cap.era >= 5) {
+    // Industrial nations send biplanes, modern ones jet bombers — and, in desperation, the bomb.
+    if (cap.era >= 4) {
       cap.airCd -= dt;
       if (cap.airCd <= 0) {
-        cap.airCd = 30 + rand() * 30;
+        cap.airCd = cap.era === 4 ? 50 + rand() * 40 : 25 + rand() * 25;
         const enemyPop = [...cap.enemies].reduce((n, e) => n + (this.villages[e]?.alive ? this.nationPop(this.villages[e]) : 0), 0);
-        const losing = this.nationPop(cap) < enemyPop * 0.7;
-        const nuke = losing && this.stats.nukes < 3 && rand() < 0.12;
+        const losing = this.nationPop(cap) < enemyPop * 0.8;
+        const nuke = cap.era >= 5 && losing && this.stats.nukes < 4 && rand() < 0.25;
         const from = this.citiesOf(cap).sort((a, b) => Math.hypot(a.cx - target!.cx, a.cy - target!.cy) - Math.hypot(b.cx - target!.cx, b.cy - target!.cy))[0] ?? cap;
         const dist = Math.hypot(target.cx - from.cx, target.cy - from.cy);
-        this.airstrikes.push({ x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: this.world.time, end: this.world.time + 3 + dist / 30, nuke, from: from.id, color: cap.color });
+        this.airstrikes.push({ x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: this.world.time, end: this.world.time + 3 + dist / (cap.era === 4 ? 18 : 30), nuke, from: from.id, color: cap.color, era: cap.era });
         if (nuke) {
           this.chronicle(cap, `☢️ ${cap.name} tuyệt vọng, cho máy bay mang bom nguyên tử bay về phía ${target.name}!`);
           this.sfx.push('war');
+        }
+      }
+    }
+
+    // From the bronze age on, coastal nations take the war to sea.
+    if (cap.era >= 1) {
+      cap.navyCd -= dt;
+      if (cap.navyCd <= 0) {
+        cap.navyCd = 40 + rand() * 50;
+        this.launchFleet(cap, target);
+      }
+    }
+  }
+
+  /** Sends a war fleet from our nearest port toward the coast by the target. */
+  private launchFleet(cap: Village, target: Village) {
+    const w = this.world;
+    const sea = (j: number) => w.isWater(j) && !w.isIce(j);
+    const dest = w.findNearest(target.cx, target.cy, target.radius + 10, sea);
+    if (dest < 0) return;
+    const ours = this.citiesOf(cap).sort((a, b) => Math.hypot(a.cx - target.cx, a.cy - target.cy) - Math.hypot(b.cx - target.cx, b.cy - target.cy));
+    for (const from of ours) {
+      const port = w.findNearest(from.cx, from.cy, from.radius + 6, sea);
+      if (port < 0) continue;
+      const dist = Math.hypot(cx(port) - cx(dest), cy(port) - cy(dest));
+      if (dist < 15) return;
+      const carrier = cap.era >= 5 && rand() < 0.45;
+      const speed = cap.era <= 2 ? 6 : cap.era <= 3 ? 8 : 12;
+      this.fleets.push({ x1: cx(port) + 0.5, y1: cy(port) + 0.5, x2: cx(dest) + 0.5, y2: cy(dest) + 0.5, start: w.time, end: w.time + 4 + dist / speed, era: cap.era, color: cap.color, from: from.id, target: target.id, carrier });
+      const what = carrier ? 'Tàu sân bay' : cap.era <= 2 ? 'Thuyền chiến chở quân' : cap.era === 3 ? 'Chiến thuyền buồm' : cap.era === 4 ? 'Thiết giáp hạm' : cap.era === 5 ? 'Khu trục hạm' : 'Chiến hạm không gian';
+      if (this.once(`navy${cap.id}`, 90)) this.chronicle(cap, `⚓ ${what} của ${cap.name} rời cảng ${from.base}, nhắm tới ${target.name}.`, false);
+      return;
+    }
+  }
+
+  /** Fleets that reach the enemy coast land troops, shell the shore, or launch aircraft. */
+  private fleetTick() {
+    const w = this.world;
+    for (const f of [...this.fleets]) {
+      if (f.end > w.time) continue;
+      this.fleets = this.fleets.filter((x) => x !== f);
+      const home = this.villages[f.from];
+      const target = this.villages[f.target];
+      if (!home?.alive || !target?.alive || !home.hostileTo(target.id)) continue;
+      if (f.era <= 2) {
+        // Troops wade ashore near the city.
+        const beach = w.findNearest(f.x2, f.y2, 8, (j) => w.canWalk(j) && !w.isWater(j));
+        if (beach < 0) continue;
+        let n = 0;
+        for (const h of this.humans) {
+          if (n >= 6) break;
+          if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village]?.nation !== home.nation) continue;
+          if (Math.hypot(h.x - target.cx, h.y - target.cy) < target.radius + 10) continue; // already at the front
+          h.x = cx(beach) + 0.5 + (rand() - 0.5) * 2;
+          h.y = cy(beach) + 0.5 + (rand() - 0.5) * 2;
+          h.hasTarget = false;
+          n++;
+        }
+      } else {
+        // Broadsides, then naval guns: shells land in and around the city.
+        const shots = f.era === 3 ? 2 : 3;
+        for (let k = 0; k < shots; k++) this.bombAt(target.cx + (rand() - 0.5) * target.radius, target.cy + (rand() - 0.5) * target.radius, f.era >= 5 ? 3 : 2, f.from);
+        if (f.carrier) {
+          for (let k = 0; k < 2; k++) {
+            this.airstrikes.push({ x1: f.x2, y1: f.y2, x2: target.cx + (rand() - 0.5) * 6, y2: target.cy + (rand() - 0.5) * 6, start: w.time + k, end: w.time + k + 3, nuke: false, from: f.from, color: f.color, era: f.era });
+          }
         }
       }
     }
@@ -2377,6 +2481,7 @@ export class Sim {
 
   /** Bombers that have reached their target drop their load. */
   private airTick() {
+    this.fleetTick();
     const now = this.world.time;
     for (const a of [...this.airstrikes]) {
       if (a.end > now) continue;
@@ -2474,6 +2579,12 @@ export class Sim {
       if (wild >= 0 && this.go(h, 'harvest', wild, FOOD_THOUGHT[this.foodAt(wild)!] + ' cho làng')) return;
     }
 
+    // After a disaster, two in three builders go back to raise the ruined homes.
+    if (v.ruins.length && v.wood >= era.houseWood && h.id % 3 !== 0 && h.age >= ADULT) {
+      const site = this.pickJob(v.ruins, h, (j) => this.validHouseSite(j, v), true);
+      if (site >= 0 && this.go(h, 'build', site, 'Dựng lại căn nhà bị tàn phá')) return;
+    }
+
     if (needHouse) {
       if (v.wood >= era.houseWood) {
         const site = this.pickJob(v.jobs.houseSites, h, (j) => this.validHouseSite(j, v), true);
@@ -2538,6 +2649,12 @@ export class Sim {
     const houses: [number, number][] = [];
     const farms: [number, number][] = [];
     this.spread(v);
+    // Ruins that have been rebuilt, or lie under sea, mountain or someone else's house, are done with.
+    if (v.ruins.length) {
+      const before = v.ruins.length;
+      v.ruins = v.ruins.filter((i) => !w.isWater(i) && w.height[i] < HILL_MAX && (w.cover[i] === Cover.NONE || w.cover[i] === Cover.ASH));
+      if (before >= 5 && !v.ruins.length) this.chronicle(v, `🏗️ ${v.name} đã được xây dựng lại sau thảm họa.`);
+    }
     const r = v.radius;
     const center = idx(v.cx, v.cy);
     const farmMin = v.floods > 1 ? v.minBuildHeight - 0.02 : w.seaLevel + 0.03;
@@ -2744,6 +2861,12 @@ export class Sim {
     const company = h.band >= 0 ? (this.bandSizes.get(h.band) ?? 0) : this.humanGrid.count(h.x, h.y, 5, (o) => o.village < 0 && o.band < 0);
     if (company < 2) return this.migrate(h, 'Lang thang một mình, tìm một ngôi làng để xin ở nhờ');
     const here = idx(Math.floor(h.x), Math.floor(h.y));
+    // People a god set down in a civilised world know what they are about: any decent dry land will do.
+    if (h.godMade && this.maxEra >= 1) {
+      if (this.fairSite(here)) return this.found(h);
+      const near = w.findNearest(h.x, h.y, 40, (j) => this.fairSite(j));
+      if (this.go(h, 'migrate', near, 'Tìm chỗ dựng cờ lập nước')) return;
+    }
     if (this.goodSite(here)) return this.found(h);
     const site = w.findNearest(h.x, h.y, 30, (j) => this.goodSite(j));
     if (this.go(h, 'migrate', site, 'Đất kia tốt, lại gần nước — lập làng thôi!')) return;
@@ -2764,7 +2887,20 @@ export class Sim {
     // A nation's settlers found one of its cities (keeping its ways more often than free bands do).
     const mother = h.colonyOf >= 0 ? this.villages[h.colonyOf]?.capital : null;
     const nationCity = mother?.alive ? mother : null;
-    const culture = inherited && rand() < (nationCity ? 0.8 : 0.5) ? inherited : native;
+    // People a god sets down in a civilised world belong to their age: they break away from (or flee)
+    // the nearest nation, and take its ways with them.
+    let kin: Village | null = null;
+    if (!nationCity && h.godMade && this.maxEra >= 1) {
+      let bd = 400;
+      for (const n of this.nations()) {
+        const dd = Math.min(...this.citiesOf(n).map((c) => Math.hypot(c.cx - x, c.cy - y)));
+        if (dd < bd) {
+          bd = dd;
+          kin = n;
+        }
+      }
+    }
+    const culture = kin ? kin.culture : inherited && rand() < (nationCity ? 0.8 : 0.5) ? inherited : native;
     const used = new Set(this.villages.map((v) => v.base));
     const base = culture.places.find((p) => !used.has(p)) ?? `${pick(culture.places)} ${['Mới', 'II', 'III', 'Hạ', 'Thượng'][id % 5]}`;
     const sameCulture = this.villages.filter((v) => v.culture.id === culture.id).length;
@@ -2790,6 +2926,21 @@ export class Sim {
       v.food = 20;
       v.wood = 12;
     }
+    let story: 'secede' | 'revolt' | 'refuge' | 'frontier' | null = null;
+    if (kin) {
+      // Born into the age of their kin, a little behind the homeland.
+      v.era = Math.max(0, kin.era - (rand() < 0.4 ? 1 : 0));
+      v.tech = Math.max(ERAS[v.era].tech, Math.min(kin.tech, ERAS[v.era].tech + (ERAS[Math.min(MAX_ERA, v.era + 1)].tech - ERAS[v.era].tech) * 0.5));
+      v.food = 30 + v.era * 10;
+      v.wood = 20 + v.era * 6;
+      v.patron = kin.patron;
+      v.faiths = [...kin.faiths];
+      const roll = rand();
+      story = kin.enemies.size || kin.trauma > 0.4 ? (roll < 0.6 ? 'refuge' : 'revolt') : roll < 0.35 ? 'secede' : roll < 0.6 ? 'revolt' : roll < 0.8 ? 'frontier' : 'refuge';
+      const op = story === 'revolt' ? -75 : story === 'secede' ? -45 : story === 'refuge' ? 20 : 5;
+      v.opinion.set(kin.id, op);
+      kin.opinion.set(v.id, op);
+    }
     this.villages.push(v);
 
     let n = 0;
@@ -2812,6 +2963,19 @@ export class Sim {
       const cities = this.citiesOf(nationCity).length;
       this.chronicle(nationCity, `🏙️ ${nationCity.name} lập thành phố mới ${v.base} — giờ có ${cities} thành phố.`);
       v.history.push({ year: this.year, text: `🏙️ ${h.name} dẫn người dân ${origin} lập nên ${v.base}, một thành phố của ${nationCity.name}.` });
+    } else if (kin && story) {
+      const k = kin.name;
+      const text = {
+        secede: `🔥 Bất bình với triều đình ${k}, ${h.name} cùng ${n - 1} người ly khai, dựng cờ lập nên ${v.name}.`,
+        revolt: `⚔️ ${h.name} giương cờ khởi nghĩa chống lại ${k}! ${n} nghĩa quân lập nên ${v.name}.`,
+        refuge: `🧳 Chạy trốn ${kin.enemies.size ? 'chiến tranh' : 'thiên tai và đói khổ'} ở ${k}, ${n} lưu dân theo ${h.name} lập nên ${v.name}.`,
+        frontier: `🧭 ${h.name} dẫn ${n - 1} người dân ${k} đi khai hoang miền đất mới, lập nên ${v.name} — tự trị, không còn thần phục ${k}.`,
+      }[story];
+      this.chronicle(v, text);
+      this.chronicle(kin, text, false);
+      this.toasts.push({ icon: text.slice(0, 2), title: { secede: 'Ly khai!', revolt: 'Khởi nghĩa!', refuge: 'Lưu dân lập nước', frontier: 'Khai hoang' }[story], text: `${v.name} (${ERAS[v.era].name})` });
+      // Rebels take up arms at once if they are strong enough to dare.
+      if (story === 'revolt' && n >= 4 && !kin.enemies.has(v.id)) this.declareWar(v, kin, 'để giành độc lập');
     } else this.chronicle(v, `🏕️ ${h.name} cùng ${Math.max(0, n - 1)} người ${origin} dừng chân ở ${culture.homeland}, lập nên ${v.name}.${adapted}`);
     this.stay(h, 'idle', `Lập nên ${v.name}`);
     this.refreshJobs(v);
@@ -2827,6 +2991,16 @@ export class Sim {
       h.heading = rand() * Math.PI * 2;
     }
     this.stay(h, 'idle', thought);
+  }
+
+  /** Dry, buildable land outside any city. */
+  private fairSite(i: number) {
+    const w = this.world;
+    if (w.cover[i] !== Cover.NONE || w.isWater(i) || w.height[i] < w.seaLevel + 0.03 || w.height[i] >= HILL_MAX || w.snow[i] > 0.5) return false;
+    const x = cx(i);
+    const y = cy(i);
+    for (const v of this.villages) if (v.alive && Math.hypot(v.cx - x, v.cy - y) < v.radius + 6) return false;
+    return true;
   }
 
   /** Fertile, dry, unclaimed land with both water and forest close by, away from other villages. */
@@ -2876,7 +3050,7 @@ export class Sim {
 
   /** What to raise on this plot: a home if people need one, else the civic building that is due. */
   private nextBuilding(v: Village, t: number): Kind | null {
-    if (v.cap < v.pop + 2) return 'house';
+    if (v.cap < v.pop + 2 || v.ruins.includes(t)) return 'house';
     const k = this.missingSpecial(v);
     if (k === 'dock' && !this.isShore(t)) return null;
     return k;
@@ -3277,6 +3451,7 @@ export class Sim {
         stats: this.stats,
         voyages: this.voyages,
         airstrikes: this.airstrikes,
+        fleets: this.fleets,
         nextId: this.nextId,
         wishId: this.wishId,
         startTime: this.startTime,
@@ -3354,7 +3529,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });
@@ -3389,6 +3564,7 @@ export class Sim {
     Object.assign(this.stats, d.stats);
     this.voyages = d.voyages ?? [];
     this.airstrikes = d.airstrikes ?? [];
+    this.fleets = d.fleets ?? [];
     this.nextId = d.nextId;
     this.wishId = d.wishId;
     this.startTime = d.startTime;

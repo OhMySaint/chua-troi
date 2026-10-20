@@ -407,6 +407,12 @@ interface War {
   minEnd?: number;
 }
 
+/** Banner colours chosen to be told apart at a glance on the map. */
+const NATION_COLORS = [
+  0xe6194b, 0x3cb44b, 0xffe119, 0x4363d8, 0xf58231, 0x911eb4, 0x42d4f4, 0xf032e6, 0xbfef45, 0xfabed4,
+  0x469990, 0xdcbeff, 0xc8853a, 0xfffac8, 0xff6f61, 0xaaffc3, 0xb5b520, 0xffd8b1, 0x7f8cff, 0x00b3a4,
+];
+
 export class Sim {
   world = new World();
   animals = new AnimalSystem(this.world);
@@ -722,6 +728,28 @@ export class Sim {
     if (war) war.minEnd = this.world.time + 90;
   }
 
+  /** The banner colour that stands out most from every living nation's (and their neighbours' most of all). */
+  private distinctColor(except?: Village) {
+    const others = this.nations().filter((n) => n !== except);
+    const rgb = (c: number) => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
+    let best = NATION_COLORS[0];
+    let bestScore = -1;
+    for (const c of NATION_COLORS) {
+      const [r, g, b] = rgb(c);
+      let score = Infinity;
+      for (const n of others) {
+        const [r2, g2, b2] = rgb(n.hue);
+        // Perceptual-ish distance: green differences show most, blue least.
+        score = Math.min(score, Math.sqrt(2 * (r - r2) ** 2 + 4 * (g - g2) ** 2 + 3 * (b - b2) ** 2));
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    return best;
+  }
+
   /** A city breaks from its nation and becomes a nation of its own. */
   private secede(city: Village, why: string) {
     const old = city.capital;
@@ -737,9 +765,7 @@ export class Sim {
     city.absorbedBy = -1;
     city.tech = Math.max(city.tech, old.tech * 0.9);
     // A banner of its own, unlike any other nation's.
-    const used = new Set(this.nations().map((n) => n.hue));
-    const palette = [...city.culture.colors, 0xc0392b, 0x2e86c1, 0x27ae60, 0x8e44ad, 0xd68910, 0x17a589, 0x6c3483, 0xa04000, 0x1f618d, 0x7d6608];
-    city.hue = palette.find((c) => !used.has(c)) ?? Math.floor(rand() * 0xffffff);
+    city.hue = this.distinctColor(city);
     for (const h of this.humans) if (h.village === city.id) h.role = 'none';
     this.chronicle(city, `🔥 ${city.base} ly khai khỏi ${old.name}, lập nên ${city.name} — ${why}.`);
     this.chronicle(old, `🔥 ${city.base} ly khai, lập nước riêng.`, false);
@@ -2631,7 +2657,8 @@ export class Sim {
     const used = new Set(this.villages.map((v) => v.base));
     const base = culture.places.find((p) => !used.has(p)) ?? `${pick(culture.places)} ${['Mới', 'II', 'III', 'Hạ', 'Thượng'][id % 5]}`;
     const sameCulture = this.villages.filter((v) => v.culture.id === culture.id).length;
-    const color = culture.colors[sameCulture % culture.colors.length];
+    void sameCulture;
+    const color = this.distinctColor();
     const v = new Village(id, base, culture, color, x, y, w.seaLevel + 0.03);
     // The god who made most of the founders is their creator; in 'halves', the god of that continent.
     const votes = [0, 0];
@@ -3222,6 +3249,13 @@ export class Sim {
       });
     });
     Village.all = this.villages;
+    // Older worlds gave kindred nations near-identical colours: repaint any that clash.
+    const seen: Village[] = [];
+    for (const n of this.nations()) {
+      const clash = seen.some((o) => Math.abs(((o.hue >> 16) & 255) - ((n.hue >> 16) & 255)) + Math.abs(((o.hue >> 8) & 255) - ((n.hue >> 8) & 255)) + Math.abs((o.hue & 255) - (n.hue & 255)) < 70);
+      if (clash) n.hue = this.distinctColor(n);
+      seen.push(n);
+    }
     this.humans = d.humans.map((o: Record<string, unknown>) => Object.assign(Object.create(Human.prototype), o, { foe: null, prey: null }));
     this.animals.list = data.animals.map((o: Record<string, unknown>) => Object.assign(Object.create(Animal.prototype), o, { prey: null }));
     // Re-link who was fighting, hunting or chasing whom.

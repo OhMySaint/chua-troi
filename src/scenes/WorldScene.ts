@@ -8,6 +8,7 @@ import { PH, PW } from '../world/render';
 import { TerrainLayer } from './TerrainLayer';
 import { BuildingLayer } from './BuildingLayer';
 import { Traffic, drawShip } from './Traffic';
+import { Borders } from './Borders';
 import { Speech } from './Speech';
 import { session } from '../net/session';
 import { audio } from '../audio/Audio';
@@ -52,6 +53,7 @@ export class WorldScene extends Phaser.Scene {
   private fx!: Phaser.GameObjects.Graphics;
   private flash!: Phaser.GameObjects.Rectangle;
   private cursor!: Phaser.GameObjects.Graphics;
+  private borders!: Borders;
   private labels = new Map<number, Phaser.GameObjects.Text>();
   private drops: Drop[] = [];
   private fires: number[] = [];
@@ -82,6 +84,8 @@ export class WorldScene extends Phaser.Scene {
 
     // Depth bands: terrain 0, territory 1, people 9, buildings 10–11, sky & effects 30+.
     this.terrainFx = this.add.graphics().setDepth(1);
+    if (this.textures.exists('borders')) this.textures.remove('borders');
+    this.borders = new Borders(this);
     this.buildings = new BuildingLayer(this);
     this.speech = new Speech(this);
     // People and vehicles sit just below the buildings: anyone walking behind a house is hidden by it.
@@ -326,6 +330,7 @@ export class WorldScene extends Phaser.Scene {
     this.buildings.setDark(Math.max(0, Math.min(1, 1 - sim.world.daylight() * 1.8)));
     if (!sim.paused) this.traffic.update(Math.min(dt, 0.1) * sim.speed, sim);
 
+    this.borders.update(dt, sim, cam);
     this.drawTowns();
     this.drawPeople();
     this.drawSky(dt);
@@ -485,10 +490,11 @@ export class WorldScene extends Phaser.Scene {
       const R = v.radius * CELL;
       if (!this.inView(x, y, R + 40)) continue;
       const atWar = v.enemies.size > 0;
-      g.fillStyle(v.color, 0.07);
-      g.fillCircle(x, y, R);
-      g.lineStyle(Math.max(1, 2 / zoom), atWar ? 0xff3030 : v.color, atWar ? 0.5 + 0.3 * Math.sin(t / 200) : 0.45);
-      g.strokeCircle(x, y, R);
+      // Land and borders are drawn by the border layer; a city at war pulses red.
+      if (atWar) {
+        g.lineStyle(Math.max(1, 2 / zoom), 0xff3030, 0.5 + 0.3 * Math.sin(t / 200));
+        g.strokeCircle(x, y, R);
+      }
       if (v.era >= 2 && v.era <= 3 && v.pop >= 12) {
         // Palisade (iron age) or stone wall with towers (medieval).
         const wr = (v.radius - 1.5) * CELL;

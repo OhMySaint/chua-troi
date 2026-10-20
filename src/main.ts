@@ -3,9 +3,12 @@ import './style.css';
 import { sim } from './core';
 import { WorldScene } from './scenes/WorldScene';
 import { mountUI } from './ui/ui';
+import { mountHome } from './ui/home';
+import './audio/Audio';
 
 sim.newWorld();
 mountUI();
+mountHome();
 
 // The simulation runs on its own timer, not the render loop: browsers stop rendering background
 // tabs, but a god who switches tabs must not freeze the world for the other god.

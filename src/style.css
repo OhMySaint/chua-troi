@@ -164,3 +164,36 @@ button.google { width: 100%; margin: 6px 0; padding: 4px; }
 .chat-log { max-height: 160px; overflow-y: auto; margin-bottom: 4px; }
 
 .gsi { display: flex; justify-content: center; margin: 8px 0 2px; min-height: 40px; }
+
+/* ---- Title screen ---- */
+body.at-home #toolbar, body.at-home #panel, body.at-home #toasts { display: none; }
+#home { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(8, 10, 24, 0.15) 0%, rgba(8, 10, 24, 0.75) 75%); }
+#home[hidden] { display: none; }
+.home-inner { text-align: center; padding: 24px 16px; max-width: 640px; width: 100%; }
+.logo { margin: 0 0 10px; font-family: 'Press Start 2P', 'VT323', monospace; font-weight: normal; line-height: 1.25;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.logo span:first-child { font-size: clamp(26px, 6vw, 54px); color: #ffe9a0;
+  text-shadow: 0 4px 0 #b8862a, 0 8px 0 #5a3a14, 0 0 28px rgba(255, 210, 110, 0.55); }
+.logo span:last-child { font-size: clamp(20px, 4.6vw, 40px); color: #9ad8ff;
+  text-shadow: 0 4px 0 #2a6aa8, 0 8px 0 #12305a, 0 0 24px rgba(120, 200, 255, 0.5); letter-spacing: 6px; }
+.logo { animation: float 6s ease-in-out infinite; }
+@keyframes float { 50% { transform: translateY(-6px); } }
+.tagline { color: #e8e6d9; text-shadow: 0 2px 0 #000; font-size: 20px; margin: 18px 0 22px; }
+.menu { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.menu button { width: min(340px, 100%); font-size: 24px; padding: 8px 14px; background: rgba(21, 24, 41, 0.92);
+  border: 3px solid #5a6496; box-shadow: inset -3px -3px 0 #10132a, 0 4px 0 rgba(0, 0, 0, 0.4); display: flex; flex-direction: column; }
+.menu button:hover { border-color: var(--accent); color: #fff6c8; transform: translateY(-1px); }
+.menu button small { font-size: 15px; color: var(--muted); }
+.menu.settings { background: rgba(21, 24, 41, 0.94); border: 3px solid #5a6496; padding: 12px 16px; width: min(420px, 100%); margin: 0 auto; align-items: stretch; }
+.menu.settings h3 { margin: 0 0 4px; font-weight: normal; color: var(--accent); }
+.set { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; }
+.set input[type='range'] { width: 160px; }
+.set.check { justify-content: flex-start; }
+.menu.settings button { width: 100%; }
+.bye { font-size: 26px; color: #ffe9a0; text-shadow: 0 2px 0 #000; }
+.home-foot { margin-top: 26px; color: var(--muted); text-shadow: 0 1px 0 #000; }
+.home-foot a { color: #9ad8ff; }
+.home-user { position: fixed; top: 12px; right: 14px; display: flex; gap: 8px; align-items: center;
+  background: rgba(21, 24, 41, 0.85); border: 2px solid var(--line); padding: 4px 8px; }
+.home-user img { width: 28px; height: 28px; }

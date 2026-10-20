@@ -1,5 +1,7 @@
 import { sim, ui, type Tool } from '../core';
 import { mountSaves, openSaves } from './saves';
+import { audio } from '../audio/Audio';
+import { saveSettings, settings } from '../settings';
 import { mountMultiplayer } from './multiplayer';
 import { session } from '../net/session';
 import { ACHIEVEMENTS } from '../sim/achievements';
@@ -94,6 +96,8 @@ export function mountUI() {
       <button id="new-world">🌍 Thế giới mới</button>
       <button id="saves-btn" title="Lưu / tải / chia sẻ thế giới (⌘S lưu nhanh)">💾 Lưu</button>
       <button id="mp-btn" title="Chơi chung: hai vị thần cùng một thế giới">👥 Chơi chung</button>
+      <button id="mute-btn" title="Tắt/bật âm thanh (M)">🔊</button>
+      <button id="menu-btn" title="Về màn hình chính">☰ Menu</button>
     </div>
   `;
 
@@ -123,6 +127,7 @@ export function mountUI() {
     }
     if (b.dataset.zoom) ui.zoomCmd = b.dataset.zoom as typeof ui.zoomCmd;
     if (b.id === 'saves-btn') openSaves();
+    if (b.id === 'mute-btn') toggleMute();
     if (b.id === 'new-world') {
       if (session?.together) alert('Đang chơi chung: hãy rời phòng trước khi tạo thế giới mới.');
       else if (confirm('Tạo thế giới mới? Thế giới hiện tại sẽ biến mất.')) sim.newWorld();
@@ -180,6 +185,7 @@ export function mountUI() {
     if (n >= 1 && n <= 9) ui.tool = TOOLS[n - 1].id;
     if (e.key === 'i') ui.tool = 'inspect';
     if (e.key === 'h') ui.tool = 'pan';
+    if (e.key === 'm') toggleMute();
     if (e.key === 'Escape') sim.warFrom = null;
     if (e.key === '+' || e.key === '=') ui.zoomCmd = 'in';
     if (e.key === '-') ui.zoomCmd = 'out';
@@ -206,6 +212,14 @@ export function mountUI() {
   setInterval(refreshPanel, 400);
   setInterval(showToasts, 250);
   refreshPanel();
+}
+
+function toggleMute() {
+  settings.muted = !settings.muted;
+  saveSettings();
+  audio.applyVolumes();
+  const b = document.querySelector('#mute-btn');
+  if (b) b.textContent = settings.muted ? '🔇' : '🔊';
 }
 
 function refreshButtons() {

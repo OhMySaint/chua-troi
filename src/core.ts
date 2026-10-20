@@ -29,6 +29,10 @@ export const ui = {
   /** Weather buttons apply to the whole world, or arm a brush that paints regions. */
   weatherMode: 'region' as 'global' | 'region',
   weatherBrush: 'rain' as import('./world/constants').Weather,
+  /** Title screen showing: the camera drifts over the world by itself. */
+  attract: true,
+  /** One-shot: the player just entered the game (camera flies to the people). */
+  enter: false,
   /** Cell the camera is centred on (for "weather here"). */
   view: { x: 0, y: 0 },
 };

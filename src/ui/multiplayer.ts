@@ -141,6 +141,7 @@ function open() {
   modal.hidden = false;
   render();
 }
+export const openMultiplayer = open;
 function close() {
   modal.hidden = true;
 }

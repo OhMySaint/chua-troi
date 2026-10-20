@@ -9,6 +9,8 @@ import { TerrainLayer } from './TerrainLayer';
 import { BuildingLayer } from './BuildingLayer';
 import { Traffic, drawShip } from './Traffic';
 import { session } from '../net/session';
+import { audio } from '../audio/Audio';
+import { settings } from '../settings';
 import { formatPop } from '../sim/eras';
 
 interface Drop {
@@ -56,6 +58,9 @@ export class WorldScene extends Phaser.Scene {
   private syncAcc = 1;
   private launches: { x: number; y: number; t: number }[] = [];
   private peerLabel?: Phaser.GameObjects.Text;
+  private heard = new WeakSet<object>();
+  private tour = { x: 0, y: 0, t: 0 };
+  private vis = { rain: 0, storm: 0, snow: 0, regions: 1 };
   private dragging = false;
   private keys?: Record<'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
@@ -243,6 +248,16 @@ export class WorldScene extends Phaser.Scene {
     }
     this.terrain.update(sim.world, this.roof, this.color, cam);
 
+    if (ui.attract) this.attractCamera(dt);
+    if (ui.enter) {
+      ui.enter = false;
+      const v = [...sim.villages].filter((o) => o.alive).sort((a, b) => b.pop - a.pop)[0];
+      const h = sim.humans[0];
+      cam.setZoom(3);
+      if (v) cam.centerOn(v.cx * CELL, v.cy * CELL);
+      else if (h) cam.centerOn(h.x * CELL, h.y * CELL);
+    }
+
     if (ui.zoomCmd) {
       if (ui.zoomCmd === 'fit') {
         cam.setZoom(this.minZoom);
@@ -299,7 +314,91 @@ export class WorldScene extends Phaser.Scene {
     this.drawSky(dt);
     this.drawLights();
     this.drawLabels(dt);
+    this.listen();
     this.drawCursor(pt.x, pt.y);
+  }
+
+  /** Title screen: glide between nations and islands. */
+  private attractCamera(dt: number) {
+    const cam = this.cameras.main;
+    this.tour.t -= dt;
+    if (this.tour.t <= 0) {
+      this.tour.t = 12;
+      const alive = sim.villages.filter((v) => v.alive);
+      const v = alive[Math.floor(Math.random() * alive.length)];
+      const isl = sim.world.islands[Math.floor(Math.random() * sim.world.islands.length)];
+      const pick = v && Math.random() < 0.7 ? { x: v.cx, y: v.cy } : isl ? { x: isl.x, y: isl.y } : { x: W / 2, y: H / 2 };
+      this.tour.x = pick.x * CELL;
+      this.tour.y = pick.y * CELL;
+    }
+    const k = Math.min(1, dt * 0.25);
+    const mid = cam.midPoint;
+    cam.centerOn(mid.x + (this.tour.x - mid.x) * k * 0.4, mid.y + (this.tour.y - mid.y) * k * 0.4);
+    cam.setZoom(cam.zoom + (1.4 - cam.zoom) * k);
+  }
+
+  /** What the camera sees → the soundscape; new events → sound effects. */
+  private listen() {
+    const w = sim.world;
+    const view = this.cameras.main.worldView;
+    let sea = 0;
+    let forest = 0;
+    for (let k = 0; k < 25; k++) {
+      const x = Math.max(0, Math.min(W - 1, Math.floor((view.x + (view.width * ((k % 5) + 0.5)) / 5) / CELL)));
+      const y = Math.max(0, Math.min(H - 1, Math.floor((view.y + (view.height * (Math.floor(k / 5) + 0.5)) / 5) / CELL)));
+      const i = y * W + x;
+      if (w.isWater(i)) sea++;
+      else if (w.cover[i] === Cover.FOREST) forest++;
+    }
+    let fires = 0;
+    for (const i of this.fires) if (this.inView((i % W) * CELL, Math.floor(i / W) * CELL)) fires++;
+    const r = Math.max(1, this.vis.regions);
+    audio.frame({
+      inGame: !ui.attract,
+      era: sim.villages.reduce((m, v) => (v.alive ? Math.max(m, v.era) : m), 0),
+      night: 1 - w.daylight(),
+      rain: (this.vis.rain + this.vis.storm) / r,
+      storm: this.vis.storm / r,
+      snow: this.vis.snow / r,
+      fire: Math.min(1, fires / 30),
+      sea: sea / 25,
+      forest: forest / 25,
+      war: sim.wars.length > 0,
+    });
+
+    const near = (x: number, y: number, pad = 300) => this.inView(x * CELL, y * CELL, pad);
+    for (const st of sim.strikes) {
+      if (this.heard.has(st)) continue;
+      this.heard.add(st);
+      if (near(st.x, st.y, 600)) audio.thunder(near(st.x, st.y, 0) ? 1 : 0.5);
+    }
+    for (const im of sim.impacts) {
+      if (this.heard.has(im)) continue;
+      this.heard.add(im);
+      if (near(im.x, im.y, 800)) audio.impact(im.kind);
+    }
+    for (const c of sim.clashes) {
+      if (this.heard.has(c)) continue;
+      this.heard.add(c);
+      if (near(c.x, c.y, 0) && Math.random() < 0.4) audio.clash();
+    }
+    for (const sh of sim.shots) {
+      if (this.heard.has(sh)) continue;
+      this.heard.add(sh);
+      if (near(sh.x1, sh.y1, 0) && Math.random() < 0.4) audio.shot();
+    }
+    for (const l of this.launches) {
+      if (this.heard.has(l)) continue;
+      this.heard.add(l);
+      if (this.inView(l.x, l.y, 200)) audio.rocket();
+    }
+    for (const cue of sim.sfx.splice(0)) {
+      if (ui.attract) continue;
+      if (cue === 'achievement' || cue === 'miracle') audio.chime();
+      else if (cue === 'era') audio.fanfare();
+      else if (cue === 'war') audio.war();
+      else if (cue === 'wish') audio.bell();
+    }
   }
 
   /** Brush tools become commands (so a second god sees exactly the same strokes). */
@@ -307,6 +406,8 @@ export class WorldScene extends Phaser.Scene {
     const r = ui.brush;
     const god = sim.me;
     if (BRUSH_TOOLS.has(ui.tool)) this.markDirty(x, y, r);
+    if (BRUSH_TOOLS.has(ui.tool) || ui.tool === 'weather') audio.tool(ui.tool);
+    else if (ui.tool === 'human' || ui.tool === 'deer' || ui.tool === 'wolf') audio.tool('spawn');
     switch (ui.tool) {
       case 'raise':
         sim.issue({ god, t: 'raise', x, y, r, a: 0.35 * dt });
@@ -679,9 +780,13 @@ export class WorldScene extends Phaser.Scene {
     const rx1 = Math.min(RW - 1, Math.floor(view.right / RP));
     const ry0 = Math.max(0, Math.floor(view.y / RP));
     const ry1 = Math.min(RH - 1, Math.floor(view.bottom / RP));
+    this.vis = { rain: 0, storm: 0, snow: 0, regions: (rx1 - rx0 + 1) * (ry1 - ry0 + 1) };
     for (let ry = ry0; ry <= ry1; ry++) {
       for (let rx = rx0; rx <= rx1; rx++) {
         const wr = w.regionWeather[ry * RW + rx];
+        if (wr === 'rain') this.vis.rain++;
+        else if (wr === 'storm') this.vis.storm++;
+        else if (wr === 'snow') this.vis.snow++;
         const a = CLOUD[wr];
         if (!a) continue;
         // Soft clumps of cloud rather than hard squares.
@@ -700,7 +805,7 @@ export class WorldScene extends Phaser.Scene {
     // Rain and snow fall only where it is raining or snowing.
     const weatherAtPx = (x: number, y: number) => w.regionWeather[regionOf(Math.max(0, Math.min(W - 1, (x / CELL) | 0)), Math.max(0, Math.min(H - 1, (y / CELL) | 0)))];
     g.lineStyle(1.5 * px, 0xaecbff, 0.55);
-    for (let i = 0; i < this.drops.length; i++) {
+    for (let i = 0; i < (settings.particles ? this.drops.length : 0); i++) {
       const d = this.drops[i];
       const x = view.x + d.x * view.width;
       const y = view.y + d.y * view.height;
@@ -855,7 +960,7 @@ export class WorldScene extends Phaser.Scene {
           .setDepth(40);
         this.labels.set(v.id, label);
       }
-      label.setVisible(visible.has(v.id) || v === sim.selectedVillage);
+      label.setVisible((settings.labels && visible.has(v.id)) || v === sim.selectedVillage);
       if (!v.alive) continue;
       const flags = `${v.enemies.size ? ' ⚔️' : ''}${praying.has(v.id) ? ' 🙏' : ''}${v.religion === 'god' ? ' ✨' : ''}`;
       label.setText(`${ERAS[v.era].icon} ${v.name} · ${formatPop(v.people)}${flags}`);

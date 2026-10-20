@@ -381,6 +381,8 @@ export class Sim {
   shake = 0;
   log: LogEntry[] = [];
   toasts: Toast[] = [];
+  /** Sound cues for the audio engine (output only; never read back by the simulation). */
+  sfx: string[] = [];
   milestones: Milestone[] = [];
   achieved = new Map<string, number>();
   stats = {
@@ -810,6 +812,7 @@ export class Sim {
       this.achieved.set(a.id, this.year);
       this.milestones.push({ year: this.year, icon: a.icon, title: a.title, desc: a.desc });
       this.toasts.push({ icon: a.icon, title: a.title, text: a.desc });
+      this.sfx.push('achievement');
       this.say(`🏆 Thành tựu: ${a.icon} ${a.title} — ${a.desc}`);
     }
   }
@@ -1055,6 +1058,7 @@ export class Sim {
       const e = ERAS[v.era];
       this.chronicle(v, `${e.icon} ${before} bước vào ${e.name}! Từ nay họ được gọi là ${v.name}.`);
       this.toasts.push({ icon: e.icon, title: `${v.base}: ${e.name}`, text: `${v.ruler || v.name} dẫn dắt dân tộc bước vào kỷ nguyên mới.` });
+      this.sfx.push('era');
     }
   }
 
@@ -1116,6 +1120,7 @@ export class Sim {
     if (!wish) return;
     this.wishes.push(wish);
     this.toasts.push({ icon: '🙏', title: `${v.base} cầu nguyện`, text: wish.text });
+    this.sfx.push('wish');
   }
 
   private composeWish(v: Village): Wish | null {
@@ -1177,6 +1182,7 @@ export class Sim {
       return;
     }
     this.grant(v, wish);
+    this.sfx.push('miracle');
     v.addFaith(g, 12);
     this.stats.wishesGranted++;
     for (const o of this.villages) {
@@ -1356,6 +1362,7 @@ export class Sim {
     this.chronicle(a, text);
     this.chronicle(b, `⚔️ ${b.name} bị ${a.name} tuyên chiến.`, false);
     this.toasts.push({ icon: '⚔️', title: 'Chiến tranh!', text: `${a.name} tuyên chiến với ${b.name}` });
+    this.sfx.push('war');
   }
 
   private makePeace(a: Village, b: Village, why: string) {

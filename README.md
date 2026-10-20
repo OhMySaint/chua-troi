@@ -1,8 +1,8 @@
-# Chúa Trời — god game pixel
+# SaintMia's World
 
 **▶ Chơi ngay:** https://ohmysaint.github.io/chua-troi/
 
-Phaser 4 + Vite + TypeScript. Bạn là chúa trời: kiến tạo địa hình, giáng thiên tai, đổi thời tiết — và xem các dân tộc ra đời, phát triển từ thời đồ đá đến hiện đại, thờ phụng, cầu xin và gây chiến.
+Phaser 4 + Vite + TypeScript, âm thanh tổng hợp bằng Web Audio (`src/audio/Audio.ts`). Bạn là chúa trời: kiến tạo địa hình, giáng thiên tai, đổi thời tiết — và xem các dân tộc ra đời, phát triển từ thời đồ đá đến hiện đại, thờ phụng, cầu xin và gây chiến.
 
 ```bash
 npm install

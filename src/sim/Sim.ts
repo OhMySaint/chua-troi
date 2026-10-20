@@ -521,7 +521,7 @@ export class Sim {
   /** Map layout and number of starting stone-age clans (0 = an empty world for the gods to people). */
   newWorld(seed = Date.now() % 2147483647, opts: { layout?: 'random' | 'halves'; tribes?: number } = {}) {
     const layout = opts.layout ?? 'random';
-    const tribes = opts.tribes ?? 16;
+    const tribes = opts.tribes ?? 0;
     this.generation++;
     this.seed = seed;
     seedRandom(seed);
@@ -2354,7 +2354,7 @@ export class Sim {
       // No land left on this shore: a seafaring people sails for the islands beyond.
       if (leader === h && h.colonist && w.time - h.leftAt > 35 && this.trySail(h)) return;
       // A band that wandered too long without finding land settles for joining an existing people.
-      if ((this.bandSizes.get(h.band) ?? 0) < 3 || w.time - h.leftAt > 140) {
+      if ((this.bandSizes.get(h.band) ?? 0) < 2 || (h.colonist && w.time - h.leftAt > 140)) {
         h.band = -1;
         h.colonist = false;
       } else if (leader && leader !== h) {
@@ -2416,12 +2416,33 @@ export class Sim {
       return this.migrate(h, 'Lang thang tìm nơi định cư');
     }
 
+    // Wanderers near one another band together behind a leader; a loner seeks out others.
+    if (h.band < 0 && !h.colonist) {
+      const near: Human[] = [];
+      this.humanGrid.each(h.x, h.y, 8, (o) => {
+        if (o.village < 0 && o.band < 0 && !o.colonist) near.push(o);
+      });
+      if (near.length >= 2) {
+        const band = this.nextBand++;
+        for (const o of near) {
+          o.band = band;
+          o.leftAt = w.time;
+        }
+        return this.stay(h, 'idle', 'Gặp được những người khác — cùng nhau đi tìm đất lành');
+      }
+      const other = this.humanGrid.nearest(h.x, h.y, 45, (o) => o !== h && o.village < 0 && !o.colonist);
+      if (other) {
+        const spot = w.findNearest(other.x, other.y, 3, (j) => w.canWalk(j));
+        if (this.go(h, 'migrate', spot, 'Thấy bóng người đằng xa, đi tới làm quen')) return;
+      }
+    }
+
     // A lone wanderer cannot found a people; a band (or a small crowd of nomads) can.
     const company = h.band >= 0 ? (this.bandSizes.get(h.band) ?? 0) : this.humanGrid.count(h.x, h.y, 5, (o) => o.village < 0 && o.band < 0);
-    if (company < 3) return this.migrate(h, 'Lang thang một mình, tìm một ngôi làng để xin ở nhờ');
+    if (company < 2) return this.migrate(h, 'Lang thang một mình, tìm một ngôi làng để xin ở nhờ');
     const here = idx(Math.floor(h.x), Math.floor(h.y));
     if (this.goodSite(here)) return this.found(h);
-    const site = w.findNearest(h.x, h.y, 15, (j) => this.goodSite(j));
+    const site = w.findNearest(h.x, h.y, 30, (j) => this.goodSite(j));
     if (this.go(h, 'migrate', site, 'Đất kia tốt, lại gần nước — lập làng thôi!')) return;
     this.migrate(h, h.colonist ? `Đoàn người từ ${h.origin} đi tìm đất mới` : 'Lang thang tìm đất lành');
   }
@@ -2524,7 +2545,9 @@ export class Sim {
         else if (w.cover[j] === Cover.FOREST) forest = true;
       }
     }
-    return water && forest;
+    // Fresh water is a must; a nearby forest is a bonus (for wood and game), not a requirement.
+    void forest;
+    return water;
   }
 
   private transferBuilding(i: number, from: Village, to: Village) {

@@ -11,7 +11,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&
 
 let home: HTMLDivElement;
 let view: 'main' | 'solo' | 'setup' | 'msetup' | 'settings' | 'bye' = 'main';
-const setup = { layout: 'random' as 'random' | 'halves', tribes: 12 };
+const setup = { layout: 'random' as 'random' | 'halves' };
 
 /** The title screen: a living world drifts by behind the menu. */
 export function mountHome() {
@@ -32,14 +32,15 @@ export function mountHome() {
         view = 'setup';
         break;
       case 'start':
-        sim.newWorld(undefined, { layout: setup.layout, tribes: setup.tribes });
-        return enterGame();
+        sim.newWorld(undefined, { layout: setup.layout, tribes: 0 });
+        enterEmptyWorld();
+        return;
       case 'layout':
         setup.layout = b.dataset.value as 'random' | 'halves';
         break;
       case 'mhost':
-        sim.newWorld(undefined, { layout: setup.layout, tribes: setup.tribes });
-        enterGame();
+        sim.newWorld(undefined, { layout: setup.layout, tribes: 0 });
+        enterEmptyWorld();
         hostRoom();
         return;
       case 'mjoin':
@@ -80,16 +81,7 @@ export function mountHome() {
     render();
   });
 
-  home.addEventListener('input', (e) => {
-    const t = e.target as HTMLInputElement;
-    if (t.id === 'tribes') {
-      setup.tribes = Number(t.value);
-      const out = home.querySelector('#tribes-out');
-      if (out) out.textContent = setup.tribes ? `${setup.tribes} bộ lạc` : 'Thế giới trống';
-      return;
-    }
-    onSetting(e);
-  });
+  home.addEventListener('input', onSetting);
   home.addEventListener('mouseover', (e) => {
     if ((e.target as HTMLElement).closest('.menu button')) audio.hover();
   });
@@ -112,6 +104,17 @@ export function showHome() {
   document.body.classList.add('at-home');
   home.hidden = false;
   render();
+}
+
+/** A fresh, empty world: hand the player the 🧑 tool and show them how to begin. */
+function enterEmptyWorld() {
+  enterGame();
+  ui.tool = 'human';
+  sim.toasts.push({
+    icon: '🧑',
+    title: 'Gieo sự sống',
+    text: 'Giữ chuột để thả người. Từ 3 người trở lên ở nơi đất tốt, gần nước và rừng, họ sẽ tự lập bộ lạc.',
+  });
 }
 
 function enterGame() {
@@ -248,9 +251,7 @@ async function render() {
         ${opt('random', '🎲 Ngẫu nhiên', '3–5 lục địa lớn')}
         ${opt('halves', '⚖️ Chia đôi', '2 lục địa cân bằng, mỗi thần một bên')}
       </div>
-      <label class="set"><span>🏕️ Bộ lạc thời đồ đá</span><input id="tribes" type="range" min="0" max="30" step="1" value="${setup.tribes}"></label>
-      <div class="muted" id="tribes-out">${setup.tribes ? `${setup.tribes} bộ lạc` : 'Thế giới trống'}</div>
-      <p class="muted">${setup.tribes ? 'Các bộ lạc sẽ tự lớn thành thành bang, rồi quốc gia.' : 'Chưa có ai — dùng 🧑 Người để gieo dân; họ sẽ tự lập bộ lạc và phát triển.'}</p>
+      <p class="muted">Thế giới bắt đầu hoang sơ, chưa có bóng người. Hãy dùng 🧑 Người để gieo dân — vài người đứng gần nhau ở nơi đất tốt, gần nước sẽ tự lập bộ lạc, rồi lớn dần thành thành bang và quốc gia.</p>
       ${
         view === 'setup'
           ? '<button data-go="start">▶ Bắt đầu</button>'

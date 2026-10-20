@@ -640,9 +640,49 @@ export class WorldScene extends Phaser.Scene {
     // Bombers on their way.
     for (const a of sim.airstrikes) {
       const k = Math.max(0, Math.min(1, (now0() - a.start) / (a.end - a.start)));
+      if (k <= 0) continue;
       const x = (a.x1 + (a.x2 - a.x1) * k) * CELL;
       const y = (a.y1 + (a.y2 - a.y1) * k) * CELL;
+      if (a.missile) {
+        // An ICBM climbs in a great arc and plunges onto its target, trailing smoke.
+        const span = Math.hypot(a.x2 - a.x1, a.y2 - a.y1) * CELL;
+        const peak = Math.min(900, span * 0.35);
+        const at = (q: number) => [(a.x1 + (a.x2 - a.x1) * q) * CELL, (a.y1 + (a.y2 - a.y1) * q) * CELL - Math.sin(q * Math.PI) * peak] as const;
+        for (let q = Math.max(0, k - 0.25); q < k; q += 0.01) {
+          const [tx, ty] = at(q);
+          if (!this.inView(tx, ty, 100)) continue;
+          g.fillStyle(0xdedede, 0.5 * (1 - (k - q) / 0.25));
+          g.fillCircle(tx, ty, 3 + (k - q) * 20);
+        }
+        const [mx, my] = at(k);
+        const [nx, ny] = at(Math.min(1, k + 0.01));
+        if (this.inView(mx, my, 100)) {
+          const ang = Math.atan2(ny - my, nx - mx);
+          g.lineStyle(4, 0xf2f2f4, 1);
+          g.lineBetween(mx - Math.cos(ang) * 8, my - Math.sin(ang) * 8, mx + Math.cos(ang) * 8, my + Math.sin(ang) * 8);
+          g.fillStyle(0xff7a2a, 0.8 + 0.2 * Math.sin(t / 40));
+          g.fillCircle(mx - Math.cos(ang) * 10, my - Math.sin(ang) * 10, 3);
+          g.fillStyle(a.color, 1);
+          g.fillCircle(mx + Math.cos(ang) * 7, my + Math.sin(ang) * 7, 2);
+        }
+        continue;
+      }
       if (!this.inView(x, y, 200)) continue;
+      if (a.hunt !== undefined) {
+        // A fighter: small, dark, swept wings, afterburner.
+        const ang = Math.atan2(a.y2 - a.y1, a.x2 - a.x1);
+        const c = Math.cos(ang);
+        const sn = Math.sin(ang);
+        const alt = 52;
+        g.fillStyle(0x2a3038, 1);
+        for (let s2 = -5; s2 <= 5; s2++) g.fillRect(x + c * s2 - 1, y - alt + sn * s2 - 1, 2, 2);
+        for (let s2 = -4; s2 <= 4; s2++) g.fillRect(x - sn * s2 - c * Math.abs(s2) * 0.6 - 1, y - alt + c * s2 - sn * Math.abs(s2) * 0.6 - 1, 2, 2);
+        g.fillStyle(0xffa040, 0.9);
+        g.fillCircle(x - c * 6, y - alt - sn * 6, 1.8);
+        g.fillStyle(a.color, 1);
+        g.fillRect(x + c * 4 - 1, y - alt + sn * 4 - 1, 2, 2);
+        continue;
+      }
       const ang = Math.atan2(a.y2 - a.y1, a.x2 - a.x1);
       const c = Math.cos(ang);
       const sn = Math.sin(ang);

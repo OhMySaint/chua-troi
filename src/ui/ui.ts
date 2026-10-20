@@ -403,6 +403,8 @@ function nationBlock(v: Village) {
     <br>🏘️ ${cities.length} thành phố · 👥 ${formatPop(cities.reduce((n, c) => n + c.people, 0))} dân cả nước
     ${cap.allies.size ? `<br>🛡️ Đồng minh: ${names(cap.allies)}` : ''}
     ${cap.pacts.size ? `<br>🕊️ Hòa ước hữu nghị: ${names(cap.pacts)}` : ''}
+    ${cap.ideology ? `<br>${{ capitalism: '💰 Tư bản chủ nghĩa', socialism: '🌹 Xã hội chủ nghĩa', communism: '☭ Cộng sản chủ nghĩa' }[cap.ideology]}` : ''}
+    ${cap.econT > 0 ? '<br>📉 <b>Khủng hoảng kinh tế</b>' : cap.econT < 0 ? '<br>📈 Kinh tế tăng trưởng mạnh' : ''}
     ${army ? `<br>${army}` : ''}
     ${v.trauma > 0.2 ? `<br>🥀 Tổn thương sau thảm họa: ${Math.round(v.trauma * 100)}%` : ''}
   </div>`;

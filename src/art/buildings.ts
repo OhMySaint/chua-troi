@@ -47,6 +47,16 @@ export const SPECIAL_KINDS = [
   'office',
   'dock',
   'spaceport',
+  // Added later: appended so the indices stored in saves stay valid.
+  'monument',
+  'theater',
+  'bank',
+  'powerplant',
+  'university',
+  'stadium',
+  'airport',
+  'park',
+  'lab',
 ] as const;
 export type Kind = (typeof SPECIAL_KINDS)[number];
 
@@ -624,6 +634,114 @@ export function drawSpecial(kind: Kind, culture: string, era: number): Art {
       p.r(cx + 8, B - 12, 4, 1, '#e8e8ec');
       p.lit(cx - 12, B - 1, 2, 1, '#3a3a44');
       p.lit(cx + 10, B - 1, 2, 1, '#3a3a44');
+      break;
+    }
+    case 'monument': {
+      // A stepped plinth with an obelisk (west) or a stupa-like tower (east).
+      p.r(cx - 7, B - 3, 14, 3, '#a8a090');
+      p.r(cx - 5, B - 5, 10, 2, '#b8b0a0');
+      if (east) {
+        for (let i = 0; i < 5; i++) p.r(cx - 4 + i, B - 8 - i * 3, 8 - i * 2, 3, i % 2 ? '#c8b070' : '#d8c080');
+        p.r(cx, B - 23, 1, 4, '#e8d090');
+      } else {
+        p.r(cx - 2, B - 22, 4, 17, '#d8d0c0');
+        p.r(cx - 1, B - 24, 2, 2, '#e8e0d0');
+        p.r(cx + 1, B - 22, 1, 17, '#b8b0a0');
+      }
+      p.acc(cx - 5, B - 4, 10, 1);
+      break;
+    }
+    case 'theater': {
+      const b = body(p, { ...spec, wall: 'stone', wallCol: '#d8cdb8', roof: spec.roof === 'none' || spec.roof === 'dome' ? 'gable' : spec.roof }, { w: 18, floors: 2 });
+      for (let x = b.x0 + 1; x < b.x0 + b.w - 1; x += 3) p.r(x, b.top + 2, 1, B - b.top - 2, '#f2eee4');
+      p.acc(b.x0 + 2, b.top, b.w - 4, 1);
+      p.r(cx - 2, B - 4, 4, 4, '#5a2a2a');
+      break;
+    }
+    case 'bank': {
+      const b = body(p, S(16, 2, 'stone', 'flat', '#e0d8c8', '#a8a090'), {});
+      for (let x = b.x0 + 1; x < b.x0 + b.w - 1; x += 3) p.r(x, b.top + 1, 1, B - b.top - 1, '#f4f0e8');
+      for (let i = 0; i < 4; i++) p.r(cx - 8 + i, b.top - 1 - i, 16 - i * 2, 1, '#d0c8b8');
+      p.r(cx - 1, b.top - 4, 2, 1, '#e0c040');
+      p.acc(b.x0, B - 1, b.w, 1);
+      break;
+    }
+    case 'powerplant': {
+      // Cooling towers and a turbine hall.
+      for (const dx of [-10, 1]) {
+        for (let y = 0; y < 18; y++) {
+          const w = 9 - Math.round(Math.sin((y / 18) * Math.PI) * 2);
+          p.r(cx + dx + (9 - w) / 2, B - 1 - y, w, 1, y % 5 === 0 ? '#a8a8a8' : '#c8c8c8');
+        }
+        p.smoke.push([cx + dx + 4, B - 19]);
+      }
+      p.r(cx - 12, B - 6, 24, 6, '#6a7078');
+      p.lit(cx - 10, B - 4, 3, 2);
+      p.lit(cx + 6, B - 4, 3, 2);
+      p.acc(cx - 12, B - 7, 24, 1);
+      break;
+    }
+    case 'university': {
+      const b = body(p, { ...spec, wall: era >= 5 ? 'brick' : 'stone', wallCol: '#c8b8a0', roof: spec.roof === 'none' ? 'flat' : spec.roof }, { w: 20, floors: 3 });
+      // A clock tower with a dome.
+      p.r(cx - 2, b.roofTop - 12, 5, 12, '#d8cdb8');
+      p.r(cx - 3, b.roofTop - 15, 7, 3, '#5a7a68');
+      p.r(cx - 1, b.roofTop - 17, 3, 2, '#5a7a68');
+      p.r(cx, b.roofTop - 9, 1, 1, '#2a2a2a');
+      flag(p, cx, b.roofTop - 17, 4);
+      break;
+    }
+    case 'stadium': {
+      // An oval bowl with floodlights.
+      for (let y = 0; y < 9; y++) {
+        const w = 26 - Math.abs(4 - y) * 2;
+        p.r(cx - w / 2, B - 1 - y, w, 1, y < 2 ? '#8a8a92' : '#b8b8c0');
+      }
+      p.r(cx - 8, B - 6, 16, 3, '#4a9a4a');
+      p.r(cx - 1, B - 6, 1, 3, '#e8e8e8');
+      for (const dx of [-13, 12]) {
+        p.r(cx + dx, B - 18, 1, 12, '#6a6a72');
+        p.lit(cx + dx - 1, B - 19, 3, 1, '#4a4a52');
+      }
+      p.acc(cx - 11, B - 9, 22, 1);
+      break;
+    }
+    case 'airport': {
+      // Runway, control tower and a parked jet.
+      p.r(cx - 15, B - 2, 30, 2, '#4a4a52');
+      for (let x = -13; x < 13; x += 4) p.r(cx + x, B - 1, 2, 1, '#e8e8e8');
+      p.r(cx + 8, B - 16, 3, 14, '#c8c8cc');
+      p.r(cx + 6, B - 19, 7, 3, '#5a7a98');
+      p.lit(cx + 7, B - 18, 5, 1, '#3a4a58');
+      p.r(cx - 10, B - 5, 12, 2, '#e8e8ec');
+      p.r(cx - 6, B - 8, 3, 6, '#e8e8ec');
+      p.r(cx - 11, B - 7, 2, 2, '#e8e8ec');
+      p.acc(cx - 10, B - 5, 2, 1);
+      break;
+    }
+    case 'park': {
+      p.r(cx - 13, B - 3, 26, 3, '#5aa04a');
+      for (const dx of [-10, -3, 5, 10]) {
+        p.r(cx + dx, B - 7, 1, 4, '#5a3a24');
+        p.r(cx + dx - 2, B - 11, 5, 4, '#3a8a3a');
+        p.r(cx + dx - 1, B - 12, 3, 1, '#4a9a4a');
+      }
+      p.r(cx - 1, B - 3, 3, 2, '#7ab8e8');
+      p.r(cx, B - 5, 1, 2, '#c8c8cc');
+      p.acc(cx - 6, B - 2, 2, 1);
+      break;
+    }
+    case 'lab': {
+      // A glass dome research centre with an antenna mast.
+      for (let y = 0; y < 10; y++) {
+        const w = Math.round(Math.sqrt(1 - (y / 10) ** 2) * 22);
+        p.r(cx - w / 2, B - 3 - y, w, 1, y % 3 ? '#8ac8e8' : '#c8e8f8');
+      }
+      p.r(cx - 12, B - 3, 24, 3, '#d8d8e0');
+      p.r(cx + 9, B - 22, 1, 19, '#9a9aa2');
+      p.lit(cx + 8, B - 23, 3, 1, '#3a3a44');
+      p.acc(cx - 12, B - 3, 24, 1);
+      p.lit(cx - 4, B - 6, 8, 2, '#3a5a78');
       break;
     }
     case 'house':

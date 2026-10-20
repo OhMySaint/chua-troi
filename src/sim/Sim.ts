@@ -118,6 +118,15 @@ const SPECIALS: { kind: Kind; era: number; per: number }[] = [
   { kind: 'hospital', era: 5, per: 0 },
   { kind: 'office', era: 5, per: 40 },
   { kind: 'spaceport', era: 6, per: 0 },
+  { kind: 'monument', era: 2, per: 0 },
+  { kind: 'theater', era: 3, per: 60 },
+  { kind: 'bank', era: 4, per: 0 },
+  { kind: 'powerplant', era: 4, per: 70 },
+  { kind: 'university', era: 4, per: 0 },
+  { kind: 'stadium', era: 5, per: 0 },
+  { kind: 'airport', era: 5, per: 0 },
+  { kind: 'park', era: 5, per: 50 },
+  { kind: 'lab', era: 6, per: 40 },
 ];
 export const SPECIAL_LABEL: Record<Kind, string> = {
   house: '🏠 Nhà ở',
@@ -133,6 +142,15 @@ export const SPECIAL_LABEL: Record<Kind, string> = {
   office: '🏢 Cao ốc',
   dock: '⚓ Bến thuyền',
   spaceport: '🚀 Sân bay vũ trụ',
+  monument: '🗿 Tượng đài',
+  theater: '🎭 Nhà hát',
+  bank: '🏦 Ngân hàng',
+  powerplant: '⚡ Nhà máy điện',
+  university: '🎓 Đại học',
+  stadium: '🏟️ Sân vận động',
+  airport: '✈️ Sân bay',
+  park: '🌳 Công viên',
+  lab: '🔬 Viện nghiên cứu',
 };
 const kindIndex = (k: Kind) => SPECIAL_KINDS.indexOf(k);
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
@@ -303,6 +321,12 @@ export class Village {
   siegeT = 0;
   /** People lost to collapsing, burning or drowned homes this moment (reported, then reset). */
   toll = 0;
+  /** Political system (on a capital, from the industrial age). */
+  ideology: '' | 'capitalism' | 'socialism' | 'communism' = '';
+  /** Economic health: 1 normal, below 1 in a crisis, above 1 in a boom. */
+  econ = 1;
+  /** Seconds left of the current crisis (>0) or boom (<0). */
+  econT = 0;
   /** Ruined plots rebuilt so far in the current recovery. */
   rebuilt = 0;
   /** Plots where homes were destroyed, waiting to be rebuilt. */
@@ -327,6 +351,12 @@ export class Village {
     return this.count(kind) > 0;
   }
   get title() {
+    // From the industrial age the state is named for its politics.
+    if (this.era >= 4 && this.ideology) {
+      if (this.ideology === 'communism') return 'Cộng hòa Nhân dân';
+      if (this.ideology === 'socialism') return 'Cộng hòa Xã hội';
+      return this.annexed >= 2 ? 'Liên bang' : 'Cộng hòa';
+    }
     if (this.annexed >= 2 && this.era >= 2) return this.culture.id === 'thao_nguyen' ? 'Đế quốc' : 'Đế chế';
     return this.culture.states[this.era];
   }
@@ -463,6 +493,7 @@ export class Sim {
   /** Bombers in flight (simulation state: they strike when they arrive). */
   airstrikes: Airstrike[] = [];
   fleets: Fleet[] = [];
+  private airId = 1;
   /** Areas whose colours changed hands (visual only: the renderer repaints them and flashes the new banner). */
   repaints: { x: number; y: number; r: number; color: number }[] = [];
   voyages: { x1: number; y1: number; x2: number; y2: number; start: number; end: number; color: number; era: number }[] = [];
@@ -1358,7 +1389,9 @@ export class Sim {
       // Stone-age clans still split into new tribes; later cities simply keep growing.
       const tooBig = v.era === 0 && v.pop >= 70;
       const room = this.villages.filter((o) => o.alive).length < 90;
-      if (v.colonizeCd <= 0 && room && (crowded || tooBig) && v.enemies.size === 0) {
+      // A thriving nation also sends pioneers to break new ground and found cities on open land.
+      const pioneering = v.era >= 1 && v.pop >= 40 && v.food > v.pop * 2 && this.citiesOf(v.capital).length < 2 + this.nationPop(v.capital) / 70 && rand() < 0.35;
+      if (v.colonizeCd <= 0 && room && (crowded || tooBig || pioneering) && v.enemies.size === 0) {
         v.colonizeCd = v.era >= 1 ? 90 + rand() * 80 : 160 + rand() * 120;
         const n = tooBig ? 14 : 8;
         const settlers = this.humans.filter((h) => h.village === v.id && h.age >= ADULT && h.age < 40 * YEAR && h.role === 'none').slice(0, n);
@@ -1376,16 +1409,24 @@ export class Sim {
             h.heading = heading;
             h.carryFood = 2;
           }
-          this.chronicle(v, `⛵ ${v.name} hết đất, ${settlers.length} người lên đường đi khai phá vùng đất mới.`);
+          this.chronicle(
+            v,
+            crowded || tooBig
+              ? `⛵ ${v.name} hết đất, ${settlers.length} người lên đường đi khai phá vùng đất mới.`
+              : `🧭 ${v.name} cử ${settlers.length} người đi khai hoang, lập thành phố mới nơi biên cương.`,
+          );
         }
       }
 
-      if (v.isCapital) this.armyTick(v, dt);
+      if (v.isCapital) {
+        this.armyTick(v, dt);
+        this.economyTick(v, dt);
+      }
 
       // Soldiers: about a third of the adults go to war.
       if (v.enemies.size) {
         // A nation massing for an offensive calls up more of its people.
-        const rate = v.has('barracks') ? 0.5 : v.capital.armyPhase === 'rally' ? 0.45 : 0.35;
+        const rate = (v.has('barracks') ? 0.5 : v.capital.armyPhase === 'rally' ? 0.45 : 0.35) + (v.capital.ideology === 'communism' ? 0.08 : 0);
         const want = Math.min(60, Math.ceil(v.adults * rate));
         let have = 0;
         for (const h of this.humans) if (h.village === v.id && h.role === 'soldier') have++;
@@ -1463,7 +1504,10 @@ export class Sim {
     const gap = this.maxEra - cap.era;
     const pace = gap > 0 ? 1 + 1.4 * gap : cap.era > this.avgEra + 1 ? 0.5 : 1;
     const recovering = 1 - 0.7 * (trauma / cities);
-    v.tech += dt * 0.09 * Math.sqrt(pop) * ERAS[cap.era].pace * v.culture.traits.tech * surplus * faith * learning * pace * recovering;
+    // Universities, labs and power feed science; the economy and the political system set the pace.
+    const science = 1 + 0.12 * Math.min(3, this.nationCount(cap, 'university') + this.nationCount(cap, 'lab') + 0.5 * this.nationCount(cap, 'powerplant'));
+    const system = cap.ideology === 'capitalism' ? 1.12 : cap.ideology === 'communism' ? 0.92 : 1;
+    v.tech += dt * 0.09 * Math.sqrt(pop) * ERAS[cap.era].pace * v.culture.traits.tech * surplus * faith * learning * pace * recovering * science * system * cap.econ;
     while (v.era < MAX_ERA && v.tech >= ERAS[v.era + 1].tech) {
       const before = v.name;
       v.era++;
@@ -1471,6 +1515,7 @@ export class Sim {
       this.chronicle(v, `${e.icon} ${before} bước vào ${e.name}! Từ nay họ được gọi là ${v.name}.`);
       this.toasts.push({ icon: e.icon, title: `${v.base}: ${e.name}`, text: `${v.ruler || v.name} dẫn dắt dân tộc bước vào kỷ nguyên mới.` });
       this.sfx.push('era');
+      if (v.era === 4 && !v.ideology) this.chooseIdeology(v);
     }
     // A catastrophe can knock a civilisation back an age.
     while (v.era > 0 && v.tech < ERAS[v.era].tech * 0.92) {
@@ -1874,6 +1919,72 @@ export class Sim {
     for (const v of this.villages) if (v.alive && v.nation === cap.id) n += v.pop;
     return n;
   }
+  private nationCount(cap: Village, kind: Kind) {
+    let n = 0;
+    for (const v of this.villages) if (v.alive && v.nation === cap.id) n += v.count(kind);
+    return n;
+  }
+
+  /** On industrialising, a nation settles on a political system shaped by its people and its friends. */
+  private chooseIdeology(cap: Village) {
+    const friends = [...cap.allies, ...cap.pacts].map((i) => this.villages[i]).filter((o) => o?.alive && o.ideology);
+    const r = rand();
+    let pick: Village['ideology'];
+    if (friends.length && r < 0.5) pick = friends[0].ideology;
+    else if (cap.culture.traits.aggression >= 1.3) pick = r < 0.55 ? 'communism' : r < 0.8 ? 'socialism' : 'capitalism';
+    else if (cap.partners.size >= 2) pick = r < 0.6 ? 'capitalism' : r < 0.85 ? 'socialism' : 'communism';
+    else pick = r < 0.4 ? 'capitalism' : r < 0.75 ? 'socialism' : 'communism';
+    cap.ideology = pick;
+    const what = { capitalism: '💰 kinh tế thị trường tư bản chủ nghĩa', socialism: '🌹 con đường xã hội chủ nghĩa', communism: '☭ chủ nghĩa cộng sản' }[pick as 'capitalism'];
+    this.chronicle(cap, `🏛️ Bước vào thời công nghiệp, ${cap.base} chọn ${what}. Từ nay gọi là ${cap.name}.`);
+  }
+
+  /**
+   * Booms and busts. Capitalist economies grow fastest but crash most often; planned economies are
+   * steady but sluggish. Wars and disasters can tip any economy into crisis, and a deep crisis can
+   * end in revolution.
+   */
+  private economyTick(cap: Village, dt: number) {
+    if (cap.era < 3) return;
+    if (cap.era >= 4 && !cap.ideology) this.chooseIdeology(cap);
+    if (cap.econT > 0) {
+      cap.econT -= dt;
+      cap.econ = 0.6;
+      for (const c of this.citiesOf(cap)) {
+        c.wood = Math.max(0, c.wood - dt * 0.2);
+        c.trauma = Math.min(1, c.trauma + dt * 0.001);
+      }
+      // A long crisis breeds revolution.
+      if (cap.era >= 4 && rand() < dt * 0.004) {
+        const before = cap.name;
+        const next: Village['ideology'] = cap.ideology === 'capitalism' ? (rand() < 0.5 ? 'socialism' : 'communism') : cap.ideology === 'communism' ? 'capitalism' : rand() < 0.5 ? 'capitalism' : 'communism';
+        cap.ideology = next;
+        cap.econT = Math.min(cap.econT, 10);
+        this.chronicle(cap, `✊ Cách mạng nổ ra giữa khủng hoảng! ${before} sụp đổ, ${cap.name} ra đời.`);
+        this.toasts.push({ icon: '✊', title: 'Cách mạng!', text: `${before} → ${cap.name}` });
+      }
+      if (cap.econT <= 0) {
+        cap.econT = -(40 + rand() * 40);
+        this.chronicle(cap, `📈 Kinh tế ${cap.name} phục hồi, bước vào thời kỳ tăng trưởng.`, false);
+      }
+      return;
+    }
+    if (cap.econT < 0) {
+      cap.econT = Math.min(0, cap.econT + dt);
+      cap.econ = cap.ideology === 'capitalism' ? 1.3 : 1.15;
+      return;
+    }
+    cap.econ = cap.ideology === 'communism' ? 0.9 : 1;
+    const base = cap.era === 3 ? 0.0006 : cap.ideology === 'capitalism' ? 0.0022 : cap.ideology === 'socialism' ? 0.001 : 0.0005;
+    const stress = (cap.enemies.size ? 0.0012 : 0) + (cap.trauma > 0.4 ? 0.0015 : 0);
+    if (rand() < (base + stress) * dt) {
+      cap.econT = 50 + rand() * 90;
+      const how = cap.era === 3 ? 'mất mùa, giá lúa tăng vọt, thương nhân phá sản' : cap.ideology === 'capitalism' ? 'thị trường chứng khoán sụp đổ, ngân hàng phá sản, thất nghiệp tràn lan' : 'kế hoạch đổ vỡ, hàng hóa khan hiếm, xếp hàng dài';
+      this.chronicle(cap, `📉 Khủng hoảng kinh tế ở ${cap.name}: ${how}.`);
+      this.toasts.push({ icon: '📉', title: 'Khủng hoảng kinh tế', text: cap.name });
+    }
+  }
+
   private nationHas(cap: Village, kind: Kind) {
     return this.villages.some((v) => v.alive && v.nation === cap.id && v.has(kind));
   }
@@ -2061,8 +2172,45 @@ export class Sim {
     this.chronicle(seat, `🏛️ ${seat.nationName} dời đô về ${seat.base}.`);
   }
 
+  /** Industrial nations bridge the straits between their own cities and to their trading partners. */
+  private bridgeTick(nations: Village[]) {
+    const w = this.world;
+    for (const n of nations) {
+      if (n.era < 4 || rand() > 0.15) continue;
+      const maxSpan = [0, 0, 5, 8, 24, 45, 80][Math.min(6, n.era)];
+      const mine = this.citiesOf(n);
+      const others = [...n.partners, ...n.pacts].flatMap((p) => (this.villages[p]?.alive ? this.citiesOf(this.villages[p]) : []));
+      for (const a of mine) {
+        for (const b of [...mine, ...others]) {
+          if (a === b || a.id > b.id && b.nation === n.id) continue;
+          const d = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+          if (d > maxSpan + 60 || !this.seaBetween(a.cx, a.cy, b.cx, b.cy)) continue;
+          // Count the open water on the way: too wide a sea and no bridge can span it.
+          let wet = 0;
+          let run = 0;
+          const steps = Math.ceil(d);
+          for (let k = 0; k <= steps; k++) {
+            const i = idx(Math.round(a.cx + ((b.cx - a.cx) * k) / steps), Math.round(a.cy + ((b.cy - a.cy) * k) / steps));
+            if (w.isWater(i)) run++;
+            else {
+              wet = Math.max(wet, run);
+              run = 0;
+            }
+          }
+          if (Math.max(wet, run) > maxSpan) continue;
+          this.carveHighway(a, b);
+          this.chronicle(n, `🌉 ${n.name} xây cầu vượt biển nối ${a.base} với ${b.base}.`);
+          this.toasts.push({ icon: '🌉', title: 'Cầu vượt biển', text: `${a.base} ↔ ${b.base}` });
+          this.repaints.push({ x: (a.cx + b.cx) / 2, y: (a.cy + b.cy) / 2, r: d / 2 + 4, color: -1 });
+          return; // one great work at a time
+        }
+      }
+    }
+  }
+
   private diplomacyTick() {
     const nations = this.nations();
+    this.bridgeTick(nations);
     const maxEra = nations.reduce((m, v) => Math.max(m, v.era), 0);
 
     for (const a of nations) {
@@ -2157,6 +2305,8 @@ export class Sim {
         if (a.culture.id === b.culture.id) delta += 0.7;
         if (a.allies.has(b.id)) delta += 1.2;
         if (a.pacts.has(b.id)) delta += 2.5;
+        // The cold war: different systems distrust each other, kindred systems stick together.
+        if (a.ideology && b.ideology) delta += a.ideology === b.ideology ? 0.6 : -0.7;
         if (!border) delta += 0.6;
         if (delta < 0) delta *= a.culture.traits.aggression;
         delta += rand() - 0.5;
@@ -2781,10 +2931,25 @@ export class Sim {
         const nuke = cap.era >= 5 && losing && this.stats.nukes < 4 && rand() < 0.25;
         const from = this.citiesOf(cap).sort((a, b) => Math.hypot(a.cx - target!.cx, a.cy - target!.cy) - Math.hypot(b.cx - target!.cx, b.cy - target!.cy))[0] ?? cap;
         const dist = Math.hypot(target.cx - from.cx, target.cy - from.cy);
-        this.airstrikes.push({ x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: this.world.time, end: this.world.time + 3 + dist / (cap.era === 4 ? 18 : 30), nuke, from: from.id, color: cap.color, era: cap.era });
+        const id = this.airId++;
+        const now = this.world.time;
         if (nuke) {
-          this.chronicle(cap, `☢️ ${cap.name} tuyệt vọng, cho máy bay mang bom nguyên tử bay về phía ${target.name}!`);
+          // The bomb comes by intercontinental missile: fast, from any distance, and unstoppable.
+          this.airstrikes.push({ id, x1: cap.cx, y1: cap.cy, x2: target.cx, y2: target.cy, start: now, end: now + 5 + dist / 90, nuke, from: cap.id, color: cap.color, era: cap.era, missile: true });
+          this.chronicle(cap, `🚀☢️ ${cap.name} tuyệt vọng, phóng tên lửa xuyên lục địa mang đầu đạn hạt nhân về phía ${target.name}!`);
           this.sfx.push('war');
+        } else {
+          const end = now + 3 + dist / (cap.era === 4 ? 18 : 30);
+          this.airstrikes.push({ id, x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: now, end, nuke, from: from.id, color: cap.color, era: cap.era });
+          // A modern defender with an airfield scrambles fighters to meet the bombers halfway.
+          const def = target.capital;
+          if (def.era >= 5 && this.nationHas(def, 'airport') && rand() < 0.55) {
+            const meet = 0.6;
+            const mx = from.cx + (target.cx - from.cx) * meet;
+            const my = from.cy + (target.cy - from.cy) * meet;
+            const t = now + (end - now) * meet;
+            this.airstrikes.push({ id: this.airId++, x1: target.cx, y1: target.cy, x2: mx, y2: my, start: now + Math.max(0, (t - now) * 0.3), end: t, nuke: false, from: target.id, color: def.color, era: def.era, hunt: id });
+          }
         }
       }
     }
@@ -2829,13 +2994,14 @@ export class Sim {
       const home = this.villages[f.from];
       const target = this.villages[f.target];
       if (!home?.alive || !target?.alive || !home.hostileTo(target.id)) continue;
-      if (f.era <= 2) {
-        // Troops wade ashore near the city.
+      {
+        // Troops wade ashore near the city (a carrier brings a whole regiment).
         const beach = w.findNearest(f.x2, f.y2, 8, (j) => w.canWalk(j) && !w.isWater(j));
         if (beach < 0) continue;
         let n = 0;
+        const cargo = f.carrier ? 12 : f.era >= 3 ? 5 : 6;
         for (const h of this.humans) {
-          if (n >= 6) break;
+          if (n >= cargo) break;
           if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village]?.nation !== home.nation) continue;
           if (Math.hypot(h.x - target.cx, h.y - target.cy) < target.radius + 10) continue; // already at the front
           h.x = cx(beach) + 0.5 + (rand() - 0.5) * 2;
@@ -2843,7 +3009,9 @@ export class Sim {
           h.hasTarget = false;
           n++;
         }
-      } else {
+        if (n && this.once(`landing${home.nation}`, 60)) this.chronicle(home.capital, `⚓ ${n} binh sĩ ${home.capital.name} đổ bộ lên bờ biển gần ${target.base}.`, false);
+      }
+      if (f.era >= 3) {
         // Broadsides, then naval guns: shells land in and around the city.
         const shots = f.era === 3 ? 2 : 3;
         for (let k = 0; k < shots; k++) this.bombAt(target.cx + (rand() - 0.5) * target.radius, target.cy + (rand() - 0.5) * target.radius, f.era >= 5 ? 3 : 2, f.from);
@@ -2863,6 +3031,17 @@ export class Sim {
     for (const a of [...this.airstrikes]) {
       if (a.end > now) continue;
       this.airstrikes = this.airstrikes.filter((x) => x !== a);
+      if (a.hunt !== undefined) {
+        // Dogfight: the fighters usually bring the bomber down.
+        const prey = this.airstrikes.find((x) => x.id === a.hunt);
+        if (prey && rand() < 0.65) {
+          this.airstrikes = this.airstrikes.filter((x) => x !== prey);
+          this.impacts.push({ x: a.x2, y: a.y2, r: 2, kind: 'bomb', t: 0.6 });
+          const def = this.villages[a.from]?.capital;
+          if (def && this.once(`dogfight${def.id}`, 40)) this.chronicle(def, `✈️ Tiêm kích ${def.name} bắn hạ máy bay ném bom địch trên bầu trời.`, false);
+        }
+        continue;
+      }
       if (a.nuke) this.nukeAt(a);
       else this.bombAt(a.x2 + rand() * 4 - 2, a.y2 + rand() * 4 - 2, 3, a.from);
     }
@@ -3487,7 +3666,9 @@ export class Sim {
         let end = k;
         while (end < path.length && w.isWater(path[end])) end++;
         const span = end - k;
-        if (era >= 2 && span <= 5 && end < path.length) for (let j = k; j < end; j++) if (w.road[path[j]] < tier) w.road[path[j]] = tier;
+        // Engineering reaches further each age: river bridges, then viaducts, then sea bridges.
+        const maxSpan = [0, 0, 5, 8, 24, 45, 80][Math.min(6, era)];
+        if (span <= maxSpan && end < path.length) for (let j = k; j < end; j++) if (w.road[path[j]] < tier) w.road[path[j]] = tier;
         k = end - 1;
         continue;
       }
@@ -3832,6 +4013,7 @@ export class Sim {
         voyages: this.voyages,
         airstrikes: this.airstrikes,
         fleets: this.fleets,
+        airId: this.airId,
         nextId: this.nextId,
         wishId: this.wishId,
         startTime: this.startTime,
@@ -3909,7 +4091,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });
@@ -3945,6 +4127,7 @@ export class Sim {
     this.voyages = d.voyages ?? [];
     this.airstrikes = d.airstrikes ?? [];
     this.fleets = d.fleets ?? [];
+    this.airId = d.airId ?? 1;
     this.nextId = d.nextId;
     this.wishId = d.wishId;
     this.startTime = d.startTime;

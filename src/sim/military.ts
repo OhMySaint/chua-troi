@@ -45,6 +45,11 @@ export interface Airstrike {
   color: number;
   /** Age of the aircraft (4 biplane, 5 jet, 6 drone). */
   era?: number;
+  id?: number;
+  /** An intercontinental ballistic missile rather than a bomber. */
+  missile?: boolean;
+  /** A fighter sent up to shoot down the bomber with this id. */
+  hunt?: number;
 }
 
 /** A war fleet under way: galleys and galleons land troops, warships shell the coast, carriers launch planes. */

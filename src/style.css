@@ -220,3 +220,12 @@ body.at-home #toolbar, body.at-home #panel, body.at-home #toasts { display: none
 body.panel-collapsed #panel { display: none; }
 body.at-home #panel-toggle { display: none; }
 .nation { margin: 4px 0; padding: 4px 6px; border: 1px dashed var(--line); line-height: 1.15; }
+
+/* Collapsible city card */
+.card-head { display: flex; align-items: center; gap: 4px; }
+.fold-toggle { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0 4px; }
+.fold-toggle.close { margin-left: auto; opacity: 0.6; }
+.fold-toggle:hover { opacity: 1; }
+.fold { margin-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.12); }
+.fold-head { display: block; width: 100%; text-align: left; background: none; border: 0; color: #cfd6e6; font: inherit; cursor: pointer; padding: 4px 0; }
+.fold-head:hover { color: #fff; }

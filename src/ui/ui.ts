@@ -155,8 +155,16 @@ export function mountUI() {
   $('#panel').addEventListener('pointerdown', () => (pressing = true));
   window.addEventListener('pointerup', () => setTimeout(() => (pressing = false), 0));
   document.addEventListener('click', (e) => {
-    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-wish],[data-village],[data-focus],[data-war]');
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-wish],[data-village],[data-focus],[data-war],[data-fold]');
     if (!el) return;
+    const fold = el.dataset.fold;
+    if (fold === 'close') {
+      sim.selectedVillage = null;
+      sim.selectedHuman = null;
+    } else if (fold) {
+      if (openParts.has(fold)) openParts.delete(fold);
+      else openParts.add(fold);
+    }
     if (el.dataset.wish) sim.issue({ god: sim.me, t: 'wish', id: Number(el.dataset.wish), yes: el.dataset.answer === 'yes' });
     if (el.dataset.village) {
       const v = sim.villages[Number(el.dataset.village)];
@@ -175,7 +183,7 @@ export function mountUI() {
       if (v) ui.focus = { x: v.cx, y: v.cy };
     }
     lastTab = '';
-    lastInspect = '';
+    lastInspect = '\0';
     setTimeout(refreshPanel, 0);
   });
 
@@ -344,6 +352,11 @@ function humanCard(h: Human) {
   `;
 }
 
+/** Which parts of the city card the player has opened (kept across re-renders). */
+const openParts = new Set<string>();
+const part = (key: string, title: string, body: string) =>
+  `<div class="fold${openParts.has(key) ? ' open' : ''}"><button class="fold-head" data-fold="${key}">${openParts.has(key) ? '▾' : '▸'} ${title}</button>${openParts.has(key) ? `<div class="fold-body">${body}</div>` : ''}</div>`;
+
 function villageCard(v: Village) {
   const era = ERAS[v.era];
   const next = v.era < MAX_ERA ? ERAS[v.era + 1] : null;
@@ -352,8 +365,11 @@ function villageCard(v: Village) {
   const wars = [...v.enemies].map((e) => sim.villages[e]);
   return `
     <div class="tribe">
-      <h3 style="color:${hex(v.color)}">${era.icon} ${esc(v.name)}${v.alive ? '' : v.absorbedBy >= 0 ? ' (đã bị sáp nhập)' : ' (đã biến mất)'}</h3>
-      <div class="muted">${esc(v.culture.name)}${v.ruler ? ` · ${esc(v.ruler)}` : ''}</div>
+      <h3 class="card-head" style="color:${hex(v.color)}"><button class="fold-toggle" data-fold="mini" title="Thu gọn / mở rộng">${openParts.has('mini') ? '▸' : '▾'}</button> ${era.icon} ${esc(v.name)}${v.alive ? '' : v.absorbedBy >= 0 ? ' (đã bị sáp nhập)' : ' (đã biến mất)'}<button class="fold-toggle close" data-fold="close" title="Đóng">✕</button></h3>
+      ${
+        openParts.has('mini')
+          ? `<div class="muted">👥 ${formatPop(v.people)} dân · ${esc(v.culture.name)}</div>`
+          : `<div class="muted">${esc(v.culture.name)}${v.ruler ? ` · ${esc(v.ruler)}` : ''}</div>
       <div>👥 ${formatPop(v.people)} dân <span class="muted">(${v.pop} người đại diện, mỗi người ≈ ${formatPop(era.popScale)})</span></div>
       <div>🏠 ${v.houses.size} nhà · 🌾 ${v.farms.size} ruộng · Kho 🍞 ${Math.floor(v.food)} 🪵 ${v.wood}</div>
       ${nationBlock(v)}
@@ -364,11 +380,10 @@ function villageCard(v: Village) {
       ${Array.from({ length: sim.gods }, (_, g) => bar(`${v.patron === g ? '✨' : '🙏'} ${esc(sim.godNames[g].split(' ').slice(-1)[0])}`, v.faiths[g] / 100, GOD_COLORS[g])).join('')}
       <div class="muted">${v.patron >= 0 ? `Thờ ${esc(sim.godNames[v.patron])}` : `Thờ ${esc(v.culture.deity)}`}</div>
       <div class="tags">${describeTraits(v.culture.traits).map((t) => `<span>${t}</span>`).join('')}</div>
-      <h4>📖 Truyền thuyết</h4>
-      ${tribeStory(sim, v).map((p) => `<p class="story">${esc(p)}</p>`).join('')}
-      <h4>📜 Sử ký</h4>
-      <ul class="history">${history.map((e) => `<li><span class="muted">Năm ${e.year}</span> ${esc(e.text)}</li>`).join('')}</ul>
       ${v.alive ? `<div class="card-actions"><button data-focus="${v.id}">📍 Tới ${esc(v.base)}</button>${warPicker(v)}</div>` : ''}
+      ${part('story', '📖 Truyền thuyết', tribeStory(sim, v).map((p) => `<p class="story">${esc(p)}</p>`).join(''))}
+      ${part('history', '📜 Sử ký', `<ul class="history">${history.map((e) => `<li><span class="muted">Năm ${e.year}</span> ${esc(e.text)}</li>`).join('')}</ul>`)}`
+      }
     </div>
   `;
 }

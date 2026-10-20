@@ -1414,6 +1414,13 @@ export class Sim {
 
   private wishTick(v: Village, dt: number) {
     v.wishCooldown -= dt;
+    // An unanswered prayer fades away; silence costs a little faith.
+    if (this.wishes.some((x) => !this.villages[x.village]?.alive)) this.wishes = this.wishes.filter((x) => this.villages[x.village]?.alive);
+    const stale = this.wishes.find((x) => x.village === v.id && x.expires <= this.world.time);
+    if (stale) {
+      this.wishes = this.wishes.filter((x) => x !== stale);
+      v.addFaith(stale.god, -3);
+    }
     if (v.wishCooldown > 0 || this.wishes.some((x) => x.village === v.id)) return;
     v.wishCooldown = 240 + (100 - v.faith) * 2 + rand() * 160;
     if (v.faith < 5) return;

@@ -1384,7 +1384,9 @@ export class Sim {
 
       // Soldiers: about a third of the adults go to war.
       if (v.enemies.size) {
-        const want = Math.min(50, Math.ceil(v.adults * (v.has('barracks') ? 0.5 : 0.35)));
+        // A nation massing for an offensive calls up more of its people.
+        const rate = v.has('barracks') ? 0.5 : v.capital.armyPhase === 'rally' ? 0.45 : 0.35;
+        const want = Math.min(60, Math.ceil(v.adults * rate));
         let have = 0;
         for (const h of this.humans) if (h.village === v.id && h.role === 'soldier') have++;
         if (have < want) {
@@ -2611,6 +2613,11 @@ export class Sim {
     const target = this.villages[cap.armyTarget];
     if (!target?.alive || cap.armyPhase === 'none') return false;
     const w = this.world;
+    // A quarter of every city's soldiers stay home as its garrison; so do those the sea cuts off from the army.
+    if (this.isGarrison(h, cap)) {
+      if (Math.hypot(h.x - v.cx, h.y - v.cy) > v.radius * 0.8) return this.go(h, 'march', idx(v.cx, v.cy), `Đồn trú giữ ${v.base}`);
+      return false;
+    }
     if (cap.armyPhase === 'siege' && Math.hypot(target.cx - h.x, target.cy - h.y) < 7) {
       let house = -1;
       let hd = Infinity;
@@ -2639,6 +2646,11 @@ export class Sim {
     return this.go(h, 'march', spot, `${u.name}: ${what}, vì ${cap.base}!`);
   }
 
+  /** Soldiers who guard their own city rather than join the field army. */
+  private isGarrison(h: Human, cap: Village) {
+    return h.id % 4 === 0 || this.seaBetween(h.x, h.y, cap.armyX, cap.armyY);
+  }
+
   /** A nation's army: rally at the city nearest the enemy, march as one block, besiege. */
   /**
    * Generals weigh every enemy city: how far it is from our own, how cut off it is from the rest of
@@ -2655,7 +2667,7 @@ export class Sim {
       const y = Math.floor(y1 + ((y2 - y1) * k) / (n || 1));
       const i = idx(x, y);
       if (w.isWater(i) && !w.canWalk(i)) {
-        if (++wet > 5) return true;
+        if (++wet > 14) return true; // rivers and lakes can be crossed; open sea cannot
       } else wet = 0;
     }
     return false;
@@ -2725,17 +2737,28 @@ export class Sim {
     }
     const d = Math.hypot(target.cx - cap.armyX, target.cy - cap.armyY);
     if (cap.armyPhase === 'rally') {
+      // The whole field army gathers from every city that can reach the muster; the generals march
+      // only once most have arrived and they outnumber the defenders (or have waited long enough).
       cap.armyT += dt;
       let total = 0;
       let near = 0;
+      const towns = new Set<number>();
       for (const h of this.humans) {
-        if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village].nation !== cap.id) continue;
+        if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village].nation !== cap.id || this.isGarrison(h, cap)) continue;
         total++;
-        if (Math.hypot(h.x - cap.armyX, h.y - cap.armyY) < 8) near++;
+        if (Math.hypot(h.x - cap.armyX, h.y - cap.armyY) < 10) {
+          near++;
+          towns.add(h.village);
+        }
       }
-      if (cap.armyT > 30 || (total >= 4 && near >= total * 0.6)) {
+      let guards = 0;
+      this.humanGrid.each(target.cx, target.cy, target.radius + 6, (o) => {
+        if (o.role === 'soldier' && o.village >= 0 && this.villages[o.village]?.nation === target.nation) guards++;
+      });
+      const ready = total >= 4 && near >= total * 0.75 && near >= guards * 1.2;
+      if (ready || cap.armyT > 100 || (cap.armyT > 50 && near >= total * 0.6 && near >= guards * 1.5)) {
         cap.armyPhase = 'march';
-        this.chronicle(cap, `🚩 Quân đội ${cap.name} lên đường tiến đánh ${target.name}.`, false);
+        this.chronicle(cap, `🚩 ${near} binh sĩ từ ${towns.size} thành của ${cap.name} tập hợp xong, lên đường tiến đánh ${target.name}${guards ? ` (quân giữ thành: ${guards})` : ''}.`, false);
       }
     } else if (cap.armyPhase === 'march' && this.seaBetween(cap.armyX, cap.armyY, target.cx, target.cy)) {
       // The sea stands between the army and its goal: it waits on the shore while the fleet sails.

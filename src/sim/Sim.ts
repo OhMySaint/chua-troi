@@ -296,9 +296,10 @@ export class Village {
     const o = Village.all[other];
     return !!o && this.capital.warSet.has(o.nation);
   }
+  /** Extra land the city has spread over beyond its era's core (grows as it needs room). */
+  reach = 0;
   get radius() {
-    // Territory grows a little as a city fills with buildings.
-    return ERAS[this.era].radius + Math.min(8, Math.floor((this.houses.size + this.buildings.size) / 12));
+    return ERAS[this.era].radius + Math.floor(this.reach);
   }
   /** Real population this nation stands for (each person on the map represents many). */
   get people() {
@@ -1240,9 +1241,10 @@ export class Sim {
       // A crowded village with no room left sends settlers to found a colony.
       // A clan that outgrows its land (or its era's ideal size) splits off a new people.
       v.colonizeCd -= dt;
+      // Only when the city cannot spread any further (or has grown very large) do settlers leave.
       const crowded = v.pop >= 30 && v.jobs.houseSites.length === 0;
       // From the bronze age on, settlers found new cities of their own nation: nations grow outward.
-      const tooBig = v.era >= 1 ? v.pop >= 34 + v.era * 4 : v.pop >= 60;
+      const tooBig = v.era >= 1 ? v.pop >= 90 + v.era * 15 : v.pop >= 70;
       const room = this.villages.filter((o) => o.alive).length < 90;
       if (v.colonizeCd <= 0 && room && (crowded || tooBig) && v.enemies.size === 0) {
         v.colonizeCd = v.era >= 1 ? 90 + rand() * 80 : 160 + rand() * 120;
@@ -2454,6 +2456,7 @@ export class Sim {
     j.fish.length = 0;
     const houses: [number, number][] = [];
     const farms: [number, number][] = [];
+    this.spread(v);
     const r = v.radius;
     const center = idx(v.cx, v.cy);
     const farmMin = v.floods > 1 ? v.minBuildHeight - 0.02 : w.seaLevel + 0.03;
@@ -2487,6 +2490,26 @@ export class Sim {
     farms.sort((a, b) => a[1] - b[1]);
     j.houseSites = houses.slice(0, 40).map((p) => p[0]);
     j.farmSites = farms.slice(0, 40).map((p) => p[0]);
+  }
+
+  /**
+   * A city spreads outward when it runs short of building land and its size justifies it, but never past
+   * the halfway line to a neighbouring city; it draws back if it shrinks.
+   */
+  private spread(v: Village) {
+    const base = ERAS[v.era].radius;
+    let limit = 70;
+    for (const o of this.villages) {
+      if (!o.alive || o === v) continue;
+      const d = Math.hypot(o.cx - v.cx, o.cy - v.cy);
+      if (d > 200) continue;
+      limit = Math.min(limit, d * 0.5 - base);
+    }
+    const size = Math.sqrt(v.houses.size + v.buildings.size + v.farms.size * 0.5) * 2.2;
+    const target = Math.max(0, Math.min(limit, size));
+    const short = v.jobs.houseSites.length < 10 || v.jobs.farmSites.length < 6;
+    if (v.reach < target && short) v.reach = Math.min(target, v.reach + 0.5);
+    else if (v.reach > target) v.reach = Math.max(target, v.reach - 0.5);
   }
 
   private isShore(i: number) {
@@ -3250,7 +3273,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

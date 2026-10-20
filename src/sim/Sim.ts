@@ -346,6 +346,8 @@ export class Human {
   god = -1;
   origin = '';
   colonist = false;
+  /** Set down by a god outside any land: wants to break new ground rather than join a village. */
+  pioneer = false;
   /** Settlers travelling together share a band; they follow its leader and found one village. */
   band = -1;
   leftAt = 0;
@@ -869,7 +871,28 @@ export class Sim {
         break;
       case 'human': {
         const i = idx(Math.floor(c.x), Math.floor(c.y));
-        if (c.x >= 0 && c.y >= 0 && c.x < W && c.y < H && w.canWalk(i)) this.spawnHuman(c.x, c.y, -1, false, c.god);
+        if (!(c.x >= 0 && c.y >= 0 && c.x < W && c.y < H && w.canWalk(i))) break;
+        // Inside a people's land: they take the newcomer in.
+        let home: Village | null = null;
+        let bd = 0;
+        for (const v of this.villages) {
+          if (!v.alive) continue;
+          const d = Math.hypot(v.cx - c.x, v.cy - c.y) - v.radius;
+          if (d <= 2 && (!home || d < bd)) {
+            home = v;
+            bd = d;
+          }
+        }
+        const h = this.spawnHuman(c.x, c.y, home ? home.id : -1, false, c.god);
+        if (!h) break;
+        if (home) {
+          home.pop++;
+          h.thought = `Gia nhập ${home.name}`;
+        } else {
+          // Outside: some seek the nearest village, others set out to found a place of their own.
+          h.pioneer = rand() < 0.5;
+          h.leftAt = w.time;
+        }
         break;
       }
       case 'animal':
@@ -2507,7 +2530,9 @@ export class Sim {
         return this.stay(h, 'idle', `Theo ${leader.name} đi tìm đất mới`);
       }
     }
-    if (!h.colonist) {
+    // A pioneer who found no companions in time gives up and looks for a village after all.
+    if (h.pioneer && w.time - h.leftAt > 90) h.pioneer = false;
+    if (!h.colonist && !h.pioneer) {
       let near: Village | null = null;
       let nd = 45;
       for (const v of this.villages) {
@@ -2536,7 +2561,7 @@ export class Sim {
 
     // Once the world has grown civilised (Middle Ages on), wanderers seek out a city instead of
     // founding a stone-age tribe in the middle of it.
-    if (!h.colonist && this.maxEra >= 3) {
+    if (!h.colonist && !h.pioneer && this.maxEra >= 3) {
       let near: Village | null = null;
       let nd = Infinity;
       for (const v of this.villages) {

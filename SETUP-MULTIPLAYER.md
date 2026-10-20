@@ -1,45 +1,32 @@
-# Bật chơi chung qua Internet + đăng nhập Google
+# Chơi chung & đăng nhập Google
 
-Không cấu hình gì thì game vẫn chạy bình thường; "Chơi chung" khi đó chỉ chạy được bằng 2 tab trên cùng trình duyệt (để thử). Để hai người ở hai máy chơi với nhau cần một project **Supabase** (miễn phí).
+**Link chơi:** https://ohmysaint.github.io/chua-troi/
 
-## 1. Tạo project Supabase
-1. Vào https://supabase.com → **New project**.
-2. Mở **Project Settings → API**, lấy **Project URL** và **anon public key**.
-3. Tạo file `.env.local` ở thư mục game:
+## Chơi chung (không cần cấu hình gì)
+Hai trình duyệt kết nối trực tiếp với nhau (WebRTC P2P, được giới thiệu qua máy chủ miễn phí của PeerJS).
+1. Người thứ nhất: **👥 Chơi chung → Tạo phòng**, gửi mã phòng hoặc link mời.
+2. Người thứ hai: mở link (hoặc nhập mã) → **Vào phòng**.
+Thế giới của người tạo phòng được chia sẻ; cả hai cùng nâng núi, đổi thời tiết, trả lời lời cầu nguyện của tín đồ mình. Nên để tab game mở trong lúc chơi.
+
+## Bật nút "Đăng nhập bằng Google"
+Chỉ cần một **OAuth Client ID** (mã công khai, không có khóa bí mật):
+1. https://console.cloud.google.com/apis/credentials → **Create credentials → OAuth client ID**
+   (lần đầu Google sẽ yêu cầu cấu hình *OAuth consent screen*: chọn External, điền tên ứng dụng "Chúa Trời" và email).
+2. Application type: **Web application**.
+3. **Authorized JavaScript origins**: `https://ohmysaint.github.io` và `http://localhost:5174`.
+4. Copy **Client ID** (dạng `xxxx.apps.googleusercontent.com`), rồi:
+   ```bash
+   gh variable set VITE_GOOGLE_CLIENT_ID -R OhMySaint/chua-troi --body "xxxx.apps.googleusercontent.com"
+   gh workflow run deploy.yml -R OhMySaint/chua-troi
    ```
-   VITE_SUPABASE_URL=https://xxxxxxxx.supabase.co
-   VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
-   ```
-   (anon key là khóa công khai, được phép nằm trong mã phía trình duyệt.)
-4. Chạy lại `npm run dev`.
+   Khi chạy ở máy: thêm `VITE_GOOGLE_CLIENT_ID=...` vào `.env.local`.
 
-## 2. Bật đăng nhập Google
-1. Google Cloud Console → **APIs & Services → Credentials → Create credentials → OAuth client ID** (loại *Web application*).
-2. **Authorized redirect URIs**: `https://xxxxxxxx.supabase.co/auth/v1/callback`
-3. Copy *Client ID* và *Client secret* vào Supabase: **Authentication → Providers → Google** → bật.
-4. Supabase **Authentication → URL Configuration**:
-   - Site URL: `http://localhost:5174` (hoặc địa chỉ bạn deploy)
-   - Redirect URLs: thêm `http://localhost:5174/**`, `http://localhost:5173/**` và domain thật nếu có.
-
-## 3. Kho lưu thế giới (để người thứ hai tải thế giới về)
-Supabase → **SQL Editor**, chạy:
+## Tùy chọn: server Supabase
+Nếu muốn dùng Supabase Realtime thay cho P2P (ví dụ mạng chặn WebRTC), đặt `VITE_SUPABASE_URL` và `VITE_SUPABASE_ANON_KEY`; khi đó đăng nhập đi qua Supabase Auth (bật provider Google trong Supabase) và thế giới được truyền qua Storage bucket `worlds`:
 ```sql
-insert into storage.buckets (id, name, public) values ('worlds', 'worlds', false)
-on conflict (id) do nothing;
-
-create policy "gods upload worlds" on storage.objects
-  for insert to authenticated with check (bucket_id = 'worlds');
-create policy "gods read worlds" on storage.objects
-  for select to authenticated using (bucket_id = 'worlds');
-create policy "gods replace worlds" on storage.objects
-  for update to authenticated using (bucket_id = 'worlds');
+insert into storage.buckets (id, name, public) values ('worlds', 'worlds', false) on conflict (id) do nothing;
+create policy "gods upload worlds" on storage.objects for insert to authenticated with check (bucket_id = 'worlds');
+create policy "gods read worlds" on storage.objects for select to authenticated using (bucket_id = 'worlds');
 ```
 
-Realtime (kênh phát tin giữa hai vị thần) không cần cấu hình thêm.
-
-## Chơi
-1. Người thứ nhất: **👥 Chơi chung → Đăng nhập bằng Google → Tạo phòng**, gửi mã hoặc link mời.
-2. Người thứ hai: mở link (hoặc nhập mã) → đăng nhập → **Vào phòng**.
-3. Thế giới của người tạo phòng được chia sẻ; hai bên cùng nâng núi, đổi thời tiết, trả lời lời cầu nguyện của tín đồ mình.
-
-Ghi chú kỹ thuật: hai máy chạy cùng một mô phỏng tất định và chỉ gửi cho nhau lệnh (`src/net/session.ts`); cứ 100 bước so checksum, lệch thì chủ phòng gửi bản lưu và cả hai tải lại. Nên để tab game mở (trình duyệt làm chậm tab ẩn quá lâu).
+Ghi chú kỹ thuật: hai máy chạy cùng một mô phỏng tất định và chỉ gửi cho nhau lệnh (`src/net/session.ts`); cứ 100 bước so checksum, lệch thì chủ phòng gửi bản lưu và cả hai cùng tải lại.

@@ -1,5 +1,7 @@
 # Chúa Trời — god game pixel
 
+**▶ Chơi ngay:** https://ohmysaint.github.io/chua-troi/
+
 Phaser 4 + Vite + TypeScript. Bạn là chúa trời: kiến tạo địa hình, giáng thiên tai, đổi thời tiết — và xem các dân tộc ra đời, phát triển từ thời đồ đá đến hiện đại, thờ phụng, cầu xin và gây chiến.
 
 ```bash
@@ -15,7 +17,7 @@ npm run dev
 - ✋ Kéo (phím `H`) · mũi tên / WASD = di chuyển · `+` `-` `0` = zoom
 
 ## Chơi chung (2 vị thần)
-👥 Chơi chung → tạo phòng / nhập mã. Hai máy chạy cùng một mô phỏng tất định (`src/sim/rand.ts`, bước cố định 0.1 s, mọi thao tác là lệnh `src/sim/commands.ts`); chỉ lệnh được gửi qua mạng theo giao thức "chân trời cam kết" (`src/net/session.ts`), so checksum mỗi 100 bước và tự đồng bộ lại bằng bản lưu. Mỗi dân tộc có đức tin riêng cho từng thần, cầu nguyện đúng thần mình thờ. Chơi qua Internet + đăng nhập Google: xem [SETUP-MULTIPLAYER.md](SETUP-MULTIPLAYER.md). Không cấu hình thì vẫn thử được bằng 2 tab cùng trình duyệt.
+👥 Chơi chung → tạo phòng / nhập mã. Hai máy chạy cùng một mô phỏng tất định (`src/sim/rand.ts`, bước cố định 0.1 s, mọi thao tác là lệnh `src/sim/commands.ts`); chỉ lệnh được gửi qua mạng theo giao thức "chân trời cam kết" (`src/net/session.ts`), so checksum mỗi 100 bước và tự đồng bộ lại bằng bản lưu. Mỗi dân tộc có đức tin riêng cho từng thần, cầu nguyện đúng thần mình thờ. Kết nối P2P (WebRTC/PeerJS), không cần server; đăng nhập Google: xem [SETUP-MULTIPLAYER.md](SETUP-MULTIPLAYER.md).
 
 ## Thế giới
 1280×800 ô, 5–7 đảo lớn cách mép bằng vành biển + quần đảo nhỏ; vẽ theo mảnh (`src/scenes/TerrainLayer.ts`: bản đồ tổng quan 1 px/ô + mảnh chi tiết 256 px theo camera). Thời tiết & nhiệt độ theo vùng 64×64 ô (front lan sang vùng bên), có hạn hán; nút 📍 Theo vùng để tô thời tiết từng vùng.

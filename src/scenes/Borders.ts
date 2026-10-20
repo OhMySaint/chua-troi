@@ -29,6 +29,11 @@ export class Borders {
     this.lines = scene.add.graphics().setDepth(1);
   }
 
+  /** Recompute on the next update (land just changed hands). */
+  invalidate() {
+    this.acc = 1;
+  }
+
   update(dt: number, sim: Sim, cam: Phaser.Cameras.Scene2D.Camera) {
     this.acc += dt;
     if (this.acc >= 0.5) {

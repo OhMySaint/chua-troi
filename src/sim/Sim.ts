@@ -463,6 +463,8 @@ export class Sim {
   /** Bombers in flight (simulation state: they strike when they arrive). */
   airstrikes: Airstrike[] = [];
   fleets: Fleet[] = [];
+  /** Areas whose colours changed hands (visual only: the renderer repaints them and flashes the new banner). */
+  repaints: { x: number; y: number; r: number; color: number }[] = [];
   voyages: { x1: number; y1: number; x2: number; y2: number; start: number; end: number; color: number; era: number }[] = [];
   shake = 0;
   log: LogEntry[] = [];
@@ -780,6 +782,7 @@ export class Sim {
     city.tech = Math.max(city.tech, old.tech * 0.9);
     // A banner of its own, unlike any other nation's.
     city.hue = this.distinctColor(city);
+    this.repaints.push({ x: city.cx, y: city.cy, r: city.radius + 8, color: city.hue });
     for (const h of this.humans) if (h.village === city.id) h.role = 'none';
     this.chronicle(city, `🔥 ${city.base} ly khai khỏi ${old.name}, lập nên ${city.name} — ${why}.`);
     this.chronicle(old, `🔥 ${city.base} ly khai, lập nước riêng.`, false);
@@ -1707,6 +1710,7 @@ export class Sim {
       else this.endWars(city);
     }
     for (const v of this.villages) if (v === city) v.nation = to.capital.id;
+    this.repaints.push({ x: city.cx, y: city.cy, r: city.radius + 8, color: to.capital.hue });
     for (const h of this.humans) if (h.village === city.id) h.role = 'none';
     city.opinion.clear();
     city.partners.clear();
@@ -2011,7 +2015,11 @@ export class Sim {
       o.pacts.delete(loser.id);
     }
     const joined = new Set(this.villages.filter((c) => c.nation === loser.id).map((c) => c.id));
-    for (const c of this.villages) if (joined.has(c.id)) c.nation = winner.id;
+    for (const c of this.villages) {
+      if (!joined.has(c.id)) continue;
+      c.nation = winner.id;
+      this.repaints.push({ x: c.cx, y: c.cy, r: c.radius + 8, color: winner.hue });
+    }
     for (const h of this.humans) if (joined.has(h.village)) h.role = 'none';
     winner.tech = Math.max(winner.tech, loser.tech);
     winner.annexed++;

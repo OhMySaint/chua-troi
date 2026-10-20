@@ -117,6 +117,7 @@ export class WorldScene extends Phaser.Scene {
   private flash!: Phaser.GameObjects.Rectangle;
   private cursor!: Phaser.GameObjects.Graphics;
   private borders!: Borders;
+  private banners: { x: number; y: number; r: number; color: number; t: number }[] = [];
   private labels = new Map<number, Phaser.GameObjects.Text>();
   private drops: Drop[] = [];
   private fires: number[] = [];
@@ -393,6 +394,12 @@ export class WorldScene extends Phaser.Scene {
     this.buildings.setDark(Math.max(0, Math.min(1, 1 - sim.world.daylight() * 1.8)));
     if (!sim.paused) this.traffic.update(Math.min(dt, 0.1) * sim.speed, sim);
 
+    // Cities that changed hands: repaint their land now and wave the new banner for a moment.
+    for (const r of sim.repaints.splice(0)) {
+      this.markDirty(r.x, r.y, r.r);
+      this.banners.push({ ...r, t: 0 });
+      this.borders.invalidate();
+    }
     this.borders.update(dt, sim, cam);
     this.drawTowns();
     this.drawPeople();
@@ -531,6 +538,22 @@ export class WorldScene extends Phaser.Scene {
     g.clear();
     const zoom = this.cameras.main.zoom;
     const t = this.time.now;
+    for (const b of this.banners) b.t += this.game.loop.delta / 1000;
+    this.banners = this.banners.filter((b) => b.t < 4);
+    for (const b of this.banners) {
+      const x = b.x * CELL + 4;
+      const y = b.y * CELL + 4;
+      const a = 1 - b.t / 4;
+      g.lineStyle(Math.max(2, 4 / zoom), b.color, a);
+      g.strokeCircle(x, y, b.r * CELL * (0.6 + 0.4 * Math.min(1, b.t * 2)));
+      // A flag on a pole over the city.
+      const fy = y - 40;
+      g.fillStyle(0x3a2a1a, a);
+      g.fillRect(x - 1, fy, 2, 34);
+      const wave = Math.sin(t / 120) * 2;
+      g.fillStyle(b.color, a);
+      g.fillTriangle(x + 1, fy, x + 1, fy + 12, x + 18 + wave, fy + 6);
+    }
     // Cities of one nation are tied to their capital by a dotted line in the nation's colour.
     for (const v of sim.villages) {
       if (!v.alive || v.isCapital) continue;

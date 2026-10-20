@@ -36,6 +36,12 @@ const CLOUD: Record<Weather, number> = { sun: 0, rain: 0.16, storm: 0.32, snow: 
 const BRUSH_TOOLS = new Set<Tool>(['raise', 'lower', 'smooth', 'water', 'forest', 'fire']);
 const CLICK_TOOLS = new Set<Tool>(['volcano', 'quake', 'meteor', 'war', 'peace', 'inspect']);
 
+/** Short form of a nation's name for city labels: "Văn Lang" → "VL", "Athena" → "ATH". */
+function abbr(name: string) {
+  const words = name.split(/\s+/).filter(Boolean);
+  return words.length > 1 ? words.map((w) => w[0]).join('').toUpperCase() : name.slice(0, 3).toUpperCase();
+}
+
 export class WorldScene extends Phaser.Scene {
   private terrain!: TerrainLayer;
   private terrainFx!: Phaser.GameObjects.Graphics;
@@ -457,6 +463,21 @@ export class WorldScene extends Phaser.Scene {
     g.clear();
     const zoom = this.cameras.main.zoom;
     const t = this.time.now;
+    // Cities of one nation are tied to their capital by a dotted line in the nation's colour.
+    for (const v of sim.villages) {
+      if (!v.alive || v.isCapital) continue;
+      const c = v.capital;
+      const x1 = v.cx * CELL + 4;
+      const y1 = v.cy * CELL + 4;
+      const x2 = c.cx * CELL + 4;
+      const y2 = c.cy * CELL + 4;
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      if (!this.inView((x1 + x2) / 2, (y1 + y2) / 2, len / 2 + 40)) continue;
+      const step = Math.max(14, 10 / zoom);
+      const dots = Math.min(120, Math.floor(len / step));
+      g.fillStyle(v.color, 0.55);
+      for (let k = 1; k < dots; k++) g.fillCircle(x1 + ((x2 - x1) * k) / dots, y1 + ((y2 - y1) * k) / dots, Math.max(2, 2 / zoom));
+    }
     for (const v of sim.villages) {
       if (!v.alive) continue;
       const x = v.cx * CELL + 4;
@@ -1095,9 +1116,9 @@ export class WorldScene extends Phaser.Scene {
       const flags = `${v.enemies.size ? ' ⚔️' : ''}${praying.has(v.id) ? ' 🙏' : ''}${v.religion === 'god' ? ' ✨' : ''}`;
       if (v.isCapital) {
         const total = sim.citiesOf(v).reduce((n, c) => n + c.people, 0);
-        const crown = sim.citiesOf(v).length > 1 ? '👑 ' : '';
-        label.setText(`${crown}${ERAS[v.era].icon} ${v.name} · ${formatPop(total)}${flags}`);
-      } else label.setText(`${v.base}${v.enemies.size ? ' ⚔️' : ''}`);
+        const many = sim.citiesOf(v).length > 1;
+        label.setText(`${many ? '👑 ' : ''}${ERAS[v.era].icon} ${v.name}${many ? ` [${abbr(v.base)}]` : ''} · ${formatPop(total)}${flags}`);
+      } else label.setText(`[${abbr(v.capital.base)}] ${v.base}${v.enemies.size ? ' ⚔️' : ''}`);
       label.setColor('#' + v.color.toString(16).padStart(6, '0'));
       label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
     }

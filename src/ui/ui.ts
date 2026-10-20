@@ -206,6 +206,30 @@ export function mountUI() {
     title: 'Điều khiển',
     text: 'Trackpad: vuốt 2 ngón để di chuyển, chụm 2 ngón để zoom, giữ ⌥ Option + kéo để kéo bản đồ. Phím mũi tên / WASD cũng được.',
   });
+  // Collapsible right panel (remembered).
+  const toggle = $<HTMLButtonElement>('#panel-toggle');
+  const setCollapsed = (on: boolean) => {
+    document.body.classList.toggle('panel-collapsed', on);
+    toggle.textContent = on ? '◀' : '▶';
+    try {
+      localStorage.setItem('saintmia:panel', on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  };
+  try {
+    setCollapsed(localStorage.getItem('saintmia:panel') === '1');
+  } catch {
+    setCollapsed(false);
+  }
+  toggle.addEventListener('click', () => setCollapsed(!document.body.classList.contains('panel-collapsed')));
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && !(e.target instanceof HTMLInputElement)) {
+      e.preventDefault();
+      setCollapsed(!document.body.classList.contains('panel-collapsed'));
+    }
+  });
+
   mountSaves();
   mountMultiplayer();
   refreshButtons();
@@ -332,6 +356,7 @@ function villageCard(v: Village) {
       <div class="muted">${esc(v.culture.name)}${v.ruler ? ` · ${esc(v.ruler)}` : ''}</div>
       <div>👥 ${formatPop(v.people)} dân <span class="muted">(${v.pop} người đại diện, mỗi người ≈ ${formatPop(era.popScale)})</span></div>
       <div>🏠 ${v.houses.size} nhà · 🌾 ${v.farms.size} ruộng · Kho 🍞 ${Math.floor(v.food)} 🪵 ${v.wood}</div>
+      ${nationBlock(v)}
       ${civics(v)}
       ${influences(v)}
       ${wars.length ? `<div class="war">⚔️ Đang chiến tranh với ${wars.map((o) => esc(o.name)).join(', ')} · hạ ${v.kills} / mất ${v.losses}</div>` : ''}
@@ -346,6 +371,25 @@ function villageCard(v: Village) {
       ${v.alive ? `<div class="card-actions"><button data-focus="${v.id}">📍 Tới ${esc(v.base)}</button>${warPicker(v)}</div>` : ''}
     </div>
   `;
+}
+
+function nationBlock(v: Village) {
+  const cap = v.capital;
+  const cities = sim.citiesOf(cap);
+  const names = (ids: Iterable<number>) =>
+    [...ids]
+      .map((i) => sim.villages[i])
+      .filter((o) => o?.alive)
+      .map((o) => esc(o.name))
+      .join(', ');
+  const army = { none: '', rally: '🚩 Quân đội đang tập hợp', march: '⚔️ Quân đội đang hành quân', siege: '🏰 Quân đội đang vây thành' }[cap.armyPhase];
+  return `<div class="nation">
+    ${v.isCapital ? `🏛️ Thủ đô của ${esc(v.nationName)}` : `🏙️ Thành phố của <b>${esc(v.nationName)}</b> (thủ đô ${esc(cap.base)})`}
+    <br>🏘️ ${cities.length} thành phố · 👥 ${formatPop(cities.reduce((n, c) => n + c.people, 0))} dân cả nước
+    ${cap.allies.size ? `<br>🛡️ Đồng minh: ${names(cap.allies)}` : ''}
+    ${army ? `<br>${army}` : ''}
+    ${v.trauma > 0.2 ? `<br>🥀 Tổn thương sau thảm họa: ${Math.round(v.trauma * 100)}%` : ''}
+  </div>`;
 }
 
 function civics(v: Village) {
@@ -402,7 +446,7 @@ function wishesTab() {
 }
 
 function tribesTab() {
-  const list = [...sim.villages].sort((a, b) => Number(b.alive) - Number(a.alive) || b.pop - a.pop);
+  const list = sim.nations().sort((a, b) => sim.nationPop(b) - sim.nationPop(a));
   if (!list.length) return '<p class="muted">Chưa có bộ tộc nào. Những người du mục đang tìm đất lành...</p>';
   return `<p class="muted">Bấm vào một bộ tộc (hoặc dùng 🔍 Quan sát trên bản đồ) để nghe câu chuyện của họ.</p><ul class="tribes">${list
     .map((v) => {
@@ -411,7 +455,7 @@ function tribesTab() {
         <span class="dot" style="background:${hex(v.color)}"></span>
         <span class="tname">${ERAS[v.era].icon} ${esc(v.name)}</span>
         <span class="muted">${esc(v.culture.name)}</span>
-        <span class="tpop">${v.alive ? `${formatPop(v.people)} 👥` : v.absorbedBy >= 0 ? 'sáp nhập' : 'diệt vong'} ${flags}</span>
+        <span class="tpop">${formatPop(sim.citiesOf(v).reduce((n, c) => n + c.people, 0))} 👥 · ${sim.citiesOf(v).length} 🏙️ ${flags}</span>
       </li>`;
     })
     .join('')}</ul>`;

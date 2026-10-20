@@ -202,3 +202,21 @@ body.at-home #toolbar, body.at-home #panel, body.at-home #toasts { display: none
 .pause-box { background: var(--panel); border: 3px solid var(--accent); padding: 12px 16px; width: min(440px, calc(100vw - 32px)); }
 .pause-box .dialog-head h3 { margin: 0 0 10px; }
 .pause-box .menu.settings { border: none; background: none; padding: 0; width: auto; }
+
+.set-title { text-align: left; color: var(--muted); }
+.choice { display: flex; gap: 8px; }
+.choice button { flex: 1; font-size: 19px; padding: 6px; }
+.choice button.active { background: var(--accent); color: #1a1408; border-color: #fff2b0; }
+.choice button.active small { color: #4a3a10; }
+
+/* ---- Right panel: one scroll, collapsible ---- */
+#panel { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #3a4166 transparent; }
+#panel::-webkit-scrollbar { width: 8px; }
+#panel::-webkit-scrollbar-thumb { background: #3a4166; }
+#inspect { max-height: none; overflow: visible; }
+#tab-body { flex: none; overflow: visible; }
+#tabs { position: sticky; top: 0; z-index: 2; background: var(--panel); }
+#panel-toggle { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 2px 8px; opacity: 0.85; }
+body.panel-collapsed #panel { display: none; }
+body.at-home #panel-toggle { display: none; }
+.nation { margin: 4px 0; padding: 4px 6px; border: 1px dashed var(--line); line-height: 1.15; }

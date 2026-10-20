@@ -242,7 +242,16 @@ export class WorldRenderer {
         const land = hp >= sea || (cover[i] !== Cover.NONE && hgt[i] >= sea);
         const c = land ? cover[i] : Cover.NONE;
 
-        if (!land) {
+        if (!land && w.road[i]) {
+          // A bridge: planks (wood), slabs (stone) or a steel deck, with railings.
+          const rd = w.road[i];
+          const deck: RGB = rd === 1 ? [138, 98, 58] : rd === 2 ? [150, 144, 132] : [92, 96, 104];
+          set(deck);
+          if (rd === 1 && (X + Y) % 3 === 0) mul(0.8);
+          const edgeX = lx === 0 || lx === 7;
+          const edgeY = ly === 0 || ly === 7;
+          if (edgeX !== edgeY) set(rd === 3 ? [180, 60, 50] : [90, 62, 36]);
+        } else if (!land) {
           const depth = sea - hp;
           if (depth < 0.004) set(FOAM);
           else {

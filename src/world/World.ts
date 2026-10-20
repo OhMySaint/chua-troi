@@ -55,6 +55,8 @@ export class World {
   weather: Weather = 'sun';
   regionWeather: Weather[] = new Array(RN).fill('sun');
   regionTemp = new Float32Array(RN).fill(20);
+  /** Climate per region, from the land itself: 0 temperate, 1 cold, 2 maritime, 3 arid, 4 highland. */
+  regionClimate = new Uint8Array(RN);
   /** Seconds until each region's weather changes on its own. */
   regionTimer = new Float32Array(RN);
   autoWeather = true;
@@ -63,12 +65,14 @@ export class World {
   dayLength = 120;
   events: WorldEvent[] = [];
   fireCount = 0;
+  layout: 'random' | 'halves' = 'random';
   /** Centres of the great islands (cells), for spreading out the first clans. */
   islands: { x: number; y: number; r: number }[] = [];
   phase = 0;
   vents: Vent[] = [];
 
-  generate(seed: number) {
+  generate(seed: number, layout: 'random' | 'halves' = 'random') {
+    this.layout = layout;
     const r = rng(seed);
     const s = Math.floor(r() * 1e6);
     this.cover.fill(Cover.NONE);
@@ -103,19 +107,27 @@ export class World {
         max = Math.max(max, v);
       }
     }
-    // Place 5–7 great islands, spread out across the ocean.
+    // Great landmasses. 'halves': two balanced continents, one per god; 'random': 3–5 continents.
     const islands: { x: number; y: number; rx: number; ry: number; cos: number; sin: number }[] = [];
-    const count = 5 + Math.floor(r() * 3);
-    for (let tries = 0; islands.length < count && tries < 400; tries++) {
-      const rx = W * (0.09 + r() * 0.08);
-      const ry0 = rx * 0.95;
-      // Keep the whole island (plus its ragged coast) well inside the map, ringed by open sea.
-      const x = rx * 1.4 + 60 + r() * (W - 2 * (rx * 1.4 + 60));
-      const y = ry0 * 1.4 + 50 + r() * (H - 2 * (ry0 * 1.4 + 50));
-      if (x < 0 || y < 0 || x > W || y > H) continue;
-      if (islands.some((o) => Math.hypot(o.x - x, o.y - y) < (o.rx + rx) * 0.75)) continue;
-      const ang = r() * Math.PI;
-      islands.push({ x, y, rx, ry: rx * (0.55 + r() * 0.4), cos: Math.cos(ang), sin: Math.sin(ang) });
+    if (layout === 'halves') {
+      for (const side of [0, 1]) {
+        islands.push({ x: W * (side ? 0.735 : 0.265), y: H * (0.5 + (r() - 0.5) * 0.06), rx: W * 0.2, ry: H * 0.36, cos: 1, sin: 0 });
+        // A satellite land so each continent has varied coasts.
+        islands.push({ x: W * (side ? 0.8 : 0.2) + (r() - 0.5) * 60, y: H * (r() < 0.5 ? 0.24 : 0.76), rx: W * 0.08, ry: H * 0.12, cos: Math.cos(r() * 3), sin: Math.sin(r() * 3) });
+      }
+    } else {
+      const count = 3 + Math.floor(r() * 3);
+      for (let tries = 0; islands.length < count && tries < 600; tries++) {
+        const rx = W * (0.14 + r() * 0.08);
+        const ry0 = rx * 0.8;
+        // Keep the whole continent (plus its ragged coast) inside the map, ringed by open sea.
+        const x = rx * 1.15 + 50 + r() * (W - 2 * (rx * 1.15 + 50));
+        const y = ry0 * 1.15 + 40 + r() * (H - 2 * (ry0 * 1.15 + 40));
+        if (x < 0 || y < 0 || x > W || y > H) continue;
+        if (islands.some((o) => Math.hypot(o.x - x, o.y - y) < (o.rx + rx) * 0.7)) continue;
+        const ang = r() * Math.PI;
+        islands.push({ x, y, rx, ry: rx * (0.6 + r() * 0.35), cos: Math.cos(ang), sin: Math.sin(ang) });
+      }
     }
     this.islands = islands.map((o) => ({ x: o.x, y: o.y, r: o.rx }));
     const smooth = (a: number, b: number, v: number) => {
@@ -140,7 +152,7 @@ export class World {
         const nx = (x / W) * 2 - 1;
         const ny = (y / H) * 2 - 1;
         const edge = smooth(1.05, 0.85, Math.max(Math.abs(nx), Math.abs(ny)));
-        const isles = smooth(0.66, 0.73, fbm(x / 26, y / 26, s + 91, 4)) * edge * smooth(0.6, 0.2, mainland);
+        const isles = smooth(0.71, 0.76, fbm(x / 30, y / 30, s + 91, 4)) * edge * smooth(0.6, 0.2, mainland);
         // A guaranteed band of open ocean along every edge of the map.
         const border = Math.min(x, y, W - 1 - x, H - 1 - y);
         const land = Math.max(mainland, isles * 0.95) * smooth(16, 56, border);
@@ -165,6 +177,7 @@ export class World {
     }
 
     this.carveRivers(r, 90);
+    this.surveyClimate();
   }
 
   private carveRivers(r: () => number, count: number) {
@@ -234,6 +247,32 @@ export class World {
     return w === 'rain' || w === 'storm';
   }
 
+  /** Classify each region's climate from its latitude, how much sea it has, and its altitude. */
+  private surveyClimate() {
+    for (let ry = 0; ry < RH; ry++) {
+      for (let rx = 0; rx < RW; rx++) {
+        let sea = 0;
+        let high = 0;
+        let chill = 0;
+        let n = 0;
+        for (let y = ry * 64; y < Math.min(H, ry * 64 + 64); y += 4) {
+          for (let x = rx * 64; x < Math.min(W, rx * 64 + 64); x += 4) {
+            const i = y * W + x;
+            n++;
+            if (this.height[i] < this.seaLevel) sea++;
+            else if (this.height[i] > HILL_MAX) high++;
+            chill += this.latChill[i];
+          }
+        }
+        const r = ry * RW + rx;
+        chill /= n;
+        sea /= n;
+        high /= n;
+        this.regionClimate[r] = chill > 8 ? 1 : high > 0.25 ? 4 : sea > 0.55 ? 2 : sea < 0.08 && ry / RH > 0.45 ? 3 : 0;
+      }
+    }
+  }
+
   /** Weather a region drifts to: often its neighbour's (fronts travel), else what its climate favours. */
   private nextWeather(r: number): Weather {
     const rx = r % RW;
@@ -244,12 +283,20 @@ export class World {
       const ny = ry + dy;
       if (nx >= 0 && ny >= 0 && nx < RW && ny < RH) return this.regionWeather[ny * RW + nx];
     }
-    const cold = ry / RH < 0.3;
-    const hot = ry / RH > 0.75;
+    void rx;
     const roll = rand();
-    if (cold) return roll < 0.35 ? 'snow' : roll < 0.65 ? 'sun' : roll < 0.85 ? 'rain' : 'storm';
-    if (hot) return roll < 0.45 ? 'sun' : roll < 0.6 ? 'drought' : roll < 0.85 ? 'rain' : 'storm';
-    return roll < 0.5 ? 'sun' : roll < 0.75 ? 'rain' : roll < 0.88 ? 'storm' : roll < 0.95 ? 'snow' : 'drought';
+    switch (this.regionClimate[r]) {
+      case 1: // cold north
+        return roll < 0.4 ? 'snow' : roll < 0.7 ? 'sun' : roll < 0.88 ? 'rain' : 'storm';
+      case 2: // maritime: wet and stormy
+        return roll < 0.35 ? 'sun' : roll < 0.7 ? 'rain' : roll < 0.95 ? 'storm' : 'snow';
+      case 3: // arid interior
+        return roll < 0.55 ? 'sun' : roll < 0.85 ? 'drought' : roll < 0.97 ? 'rain' : 'storm';
+      case 4: // highlands: snow even in temperate latitudes
+        return roll < 0.4 ? 'sun' : roll < 0.65 ? 'snow' : roll < 0.9 ? 'rain' : 'storm';
+      default:
+        return roll < 0.5 ? 'sun' : roll < 0.78 ? 'rain' : roll < 0.9 ? 'storm' : roll < 0.96 ? 'drought' : 'snow';
+    }
   }
 
   isWater(i: number) {
@@ -259,7 +306,7 @@ export class World {
     return this.isWater(i) && this.snow[i] > 0.5;
   }
   canWalk(i: number) {
-    if (this.isWater(i)) return this.isIce(i);
+    if (this.isWater(i)) return this.isIce(i) || this.road[i] > 0; // ice, or a bridge
     const c = this.cover[i];
     return c !== Cover.FIRE && c !== Cover.LAVA;
   }
@@ -397,7 +444,6 @@ export class World {
           this.destroy(i, 'flood');
           this.cover[i] = Cover.NONE;
         }
-        this.road[i] = 0;
         // Shallow water freezes first; open ocean only in deep cold.
         if (temp < -2 && (h > sea - 0.06 || temp < -14)) this.snow[i] = Math.min(1, this.snow[i] + 0.06 * (h > sea - 0.06 ? 1 : 0.3));
         else if (temp > 0) this.snow[i] = Math.max(0, this.snow[i] - 0.12);
@@ -611,6 +657,14 @@ export class World {
       } else if (this.canBurn(i) && rand() < 0.5) this.ignite(i);
     });
     this.events.push({ type: 'impact', x: cx, y: cy, r, kind: 'meteor' });
+  }
+
+  /** Blast a cell to scorched ash (nuclear fire): buildings, farms and forest are gone. */
+  scorch(i: number) {
+    if (this.cover[i] !== Cover.NONE) this.destroy(i, 'burn');
+    this.cover[i] = Cover.ASH;
+    this.timer[i] = 200 + rand() * 100;
+    this.road[i] = 0;
   }
 
   /** Nearest cell (ring search) within r matching pred, or -1. */

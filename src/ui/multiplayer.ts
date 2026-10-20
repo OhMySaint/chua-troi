@@ -142,6 +142,16 @@ function open() {
   render();
 }
 export const openMultiplayer = open;
+
+/** Create a room right away for the world just made, and show its invitation. */
+export function hostRoom() {
+  try {
+    begin(newRoomCode(), 'host');
+  } catch (err) {
+    alert((err as Error).message);
+  }
+  open();
+}
 function close() {
   modal.hidden = true;
 }

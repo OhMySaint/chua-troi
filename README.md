@@ -22,6 +22,13 @@ npm run dev
 ## Thế giới
 1280×800 ô, 5–7 đảo lớn cách mép bằng vành biển + quần đảo nhỏ; vẽ theo mảnh (`src/scenes/TerrainLayer.ts`: bản đồ tổng quan 1 px/ô + mảnh chi tiết 256 px theo camera). Thời tiết & nhiệt độ theo vùng 64×64 ô (front lan sang vùng bên), có hạn hán; nút 📍 Theo vùng để tô thời tiết từng vùng.
 
+## Quốc gia, chiến tranh, ngoại giao
+- **Thành phố & quốc gia:** mỗi khu dân cư là một thành phố; quốc gia gồm nhiều thành phố (thủ đô mang tên, màu, tước hiệu). Nước mở rộng bằng cách gửi dân lập thành phố mới, chiếm thành phố của địch, hoặc sáp nhập cả nước (chinh phục / hợp nhất hòa bình / khai hóa) — có thể đi tới một quốc gia duy nhất.
+- **Ngoại giao (AI):** quan hệ, liên minh (đồng minh tham chiến), thương mại trao đổi lương thực/gỗ, đường cao tốc, giao lưu văn hóa.
+- **Quân sự theo thời đại** (`src/sim/military.ts`): bộ binh, cung thủ, kỵ binh, lính súng, xe tăng, chiến giáp; quân tập hợp → hành quân theo đội hình → vây thành; máy bay ném bom và bom nguyên tử ở thời hiện đại.
+- **Tiến trình:** công nghệ tính theo căn bậc hai dân số cả nước; nước tụt hậu bắt kịp nhanh, nước dẫn đầu chậm lại; ~50–60 phút ở 2x từ đồ đá tới vũ trụ. Thiên tai/chiến tranh gây tổn thương (suy thoái, có thể lùi thời đại).
+- **Khởi tạo:** bản đồ ngẫu nhiên hoặc chia đôi (2 lục địa cho 2 thần), số bộ lạc ban đầu (0 = thế giới trống). Dân do thần nào tạo ra thì cầu nguyện thần đó.
+
 ## Lưu game
 💾 trên thanh công cụ: 3 ô lưu + tự động lưu mỗi 3 phút (IndexedDB), ⌘S/Ctrl+S lưu nhanh, xuất/nhập file `.chuatroi` (vài MB, gzip; header JSON + các lớp bản đồ lượng tử hóa — `src/save.ts`, `Sim.snapshot()/restore()`).
 

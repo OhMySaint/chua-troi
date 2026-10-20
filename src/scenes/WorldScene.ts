@@ -8,6 +8,7 @@ import { PH, PW } from '../world/render';
 import { TerrainLayer } from './TerrainLayer';
 import { BuildingLayer } from './BuildingLayer';
 import { Traffic, drawShip } from './Traffic';
+import { Speech } from './Speech';
 import { session } from '../net/session';
 import { audio } from '../audio/Audio';
 import { settings } from '../settings';
@@ -55,7 +56,9 @@ export class WorldScene extends Phaser.Scene {
   private minZoom = 0.3;
   private buildings!: BuildingLayer;
   private traffic = new Traffic();
+  private speech!: Speech;
   private syncAcc = 1;
+  private syncView = { x: 0, y: 0, z: 1 };
   private launches: { x: number; y: number; t: number }[] = [];
   private peerLabel?: Phaser.GameObjects.Text;
   private heard = new WeakSet<object>();
@@ -74,6 +77,7 @@ export class WorldScene extends Phaser.Scene {
     // Depth bands: terrain 0, territory 1, people 9, buildings 10–11, sky & effects 30+.
     this.terrainFx = this.add.graphics().setDepth(1);
     this.buildings = new BuildingLayer(this);
+    this.speech = new Speech(this);
     // People and vehicles sit just below the buildings: anyone walking behind a house is hidden by it.
     this.people = this.add.graphics().setDepth(9);
     this.cloudShade = this.add.rectangle(0, 0, PW, PH, 0x2a2e38, 0).setOrigin(0).setDepth(30);
@@ -302,9 +306,15 @@ export class WorldScene extends Phaser.Scene {
       }
     }
 
+    // Re-sync building sprites regularly — and at once when the camera jumps or zooms, so a city
+    // never stays missing while you fly in to it.
     this.syncAcc += dt;
-    if (this.syncAcc > 0.3) {
+    const mid = cam.midPoint;
+    const moved = Math.hypot(mid.x - this.syncView.x, mid.y - this.syncView.y) > cam.worldView.width / 4;
+    const zoomed = Math.abs(cam.zoom - this.syncView.z) / this.syncView.z > 0.15;
+    if (this.syncAcc > 0.3 || moved || zoomed) {
       this.syncAcc = 0;
+      this.syncView = { x: mid.x, y: mid.y, z: cam.zoom };
       this.buildings.sync(sim, cam.worldView, cam.zoom);
     }
     this.buildings.setDark(Math.max(0, Math.min(1, 1 - sim.world.daylight() * 1.8)));
@@ -315,6 +325,7 @@ export class WorldScene extends Phaser.Scene {
     this.drawSky(dt);
     this.drawLights();
     this.drawLabels(dt);
+    this.speech.update(dt, sim, cam, settings.speech && !ui.attract);
     this.listen();
     this.drawCursor(pt.x, pt.y);
   }
@@ -479,6 +490,7 @@ export class WorldScene extends Phaser.Scene {
   // ---------- People & animals ----------
 
   private drawPeople() {
+    const now0 = () => sim.world.time;
     const g = this.people;
     g.clear();
     const t = this.time.now;
@@ -509,6 +521,30 @@ export class WorldScene extends Phaser.Scene {
       }
     }
     this.traffic.draw(g, lod, (x, y) => this.inView(x, y), t);
+
+    // Bombers on their way.
+    for (const a of sim.airstrikes) {
+      const k = Math.max(0, Math.min(1, (now0() - a.start) / (a.end - a.start)));
+      const x = (a.x1 + (a.x2 - a.x1) * k) * CELL;
+      const y = (a.y1 + (a.y2 - a.y1) * k) * CELL;
+      if (!this.inView(x, y, 200)) continue;
+      const ang = Math.atan2(a.y2 - a.y1, a.x2 - a.x1);
+      const c = Math.cos(ang);
+      const sn = Math.sin(ang);
+      g.fillStyle(0x000000, 0.18);
+      g.fillEllipse(x + 8, y + 6, 16, 5);
+      g.lineStyle(2, 0xffffff, 0.3);
+      g.lineBetween(x, y - 48, x - c * 70, y - 48 - sn * 70);
+      g.fillStyle(a.nuke ? 0xe8e8e8 : 0x5a6470, 1);
+      for (let s2 = -7; s2 <= 7; s2++) g.fillRect(x + c * s2 - 1, y - 48 + sn * s2 - 1, 3, 3);
+      for (let s2 = -7; s2 <= 7; s2++) g.fillRect(x - sn * s2 - 1, y - 48 + c * s2 - 1, 2, 2);
+      g.fillStyle(a.color, 1);
+      g.fillRect(x - c * 7 - 1, y - 48 - sn * 7 - 1, 3, 3);
+      if (k > 0.85) {
+        g.fillStyle(0x2a2a2a, 1);
+        g.fillRect(x - 1, y - 40 + (k - 0.85) * 240, 2, 4);
+      }
+    }
 
     // Colonists crossing the sea.
     const now = sim.world.time;
@@ -617,7 +653,26 @@ export class WorldScene extends Phaser.Scene {
     const soldier = h.role === 'soldier' || h.action === 'fight';
     const era = v?.era ?? 0;
 
-    const top = swimming ? -3 : child ? -6 : sitting ? -6 : -8;
+    // Vehicles of war replace the walking figure.
+    if (h.role === 'soldier' && (h.unit === 'tank' || h.unit === 'mech')) {
+      this.drawMachine(g, h, px, py, shirt, t, walking);
+      return;
+    }
+    const riding = h.role === 'soldier' && h.unit === 'cavalry' && !swimming;
+    if (riding) {
+      // Horse beneath the rider.
+      const f = h.tx >= h.x ? 1 : -1;
+      g.fillStyle(0x000000, 0.28);
+      g.fillEllipse(px + 0.5, py, 10, 2);
+      g.fillStyle(0x6a4428, 1);
+      g.fillRect(px - 4, py - 5, 9, 3);
+      g.fillRect(px + (f > 0 ? 4 : -6), py - 7, 3, 3);
+      g.fillStyle(0x3a2414, 1);
+      g.fillRect(px + (f > 0 ? -5 : 5), py - 5, 1, 3);
+      for (const lx of [-4, -2, 2, 4]) g.fillRect(px + lx, py - 2, 1, stepA === lx > 0 ? 2 : 1);
+    }
+
+    const top = swimming ? -3 : child ? -6 : sitting ? -6 : riding ? -12 : -8;
 
     if (swimming) {
       g.fillStyle(0xc4e4f0, 0.9);
@@ -689,6 +744,38 @@ export class WorldScene extends Phaser.Scene {
       g.strokeRect(px - 4, py + top - 2, 9, -top + 4);
       g.fillStyle(0xffe14d, 1);
       g.fillTriangle(px - 2, py + top - 6, px + 3, py + top - 6, px + 0.5, py + top - 3);
+    }
+  }
+
+  private drawMachine(g: Phaser.GameObjects.Graphics, h: Human, px: number, py: number, color: number, t: number, moving: boolean) {
+    const f = h.tx >= h.x ? 1 : -1;
+    const R = (x: number, y: number, w: number, hh: number, c: number) => {
+      g.fillStyle(c, 1);
+      g.fillRect(px + (f > 0 ? x : -x - w), py + y, w, hh);
+    };
+    g.fillStyle(0x000000, 0.3);
+    g.fillEllipse(px + 0.5, py, 12, 3);
+    if (h.unit === 'tank') {
+      R(-5, -3, 11, 3, 0x2a2a28); // tracks
+      for (let k = 0; k < 5; k++) R(-4 + k * 2, -2, 1, 1, (Math.floor(t / 100) + k) % 2 && moving ? 0x5a5a52 : 0x3a3a36);
+      R(-5, -6, 11, 3, 0x5a6a3a); // hull
+      R(-2, -8, 6, 2, 0x4a5a2e); // turret
+      R(4, -8, 6, 1, 0x3a4a24); // barrel
+      R(-4, -6, 2, 1, color); // flag stripe
+    } else {
+      // Space-age battle mech.
+      const step = moving && Math.floor(t / 140 + h.id) % 2 === 0;
+      R(-2, -2, 1, 2 + (step ? 0 : -1), 0x6a7480);
+      R(2, -2, 1, 2 + (step ? -1 : 0), 0x6a7480);
+      R(-3, -8, 7, 6, 0xb8c4d0);
+      R(-2, -10, 5, 2, 0x8a96a2);
+      R(-1, -9, 3, 1, 0x8af0ff);
+      R(4, -7, 4, 1, 0x4a5460);
+      R(-3, -6, 7, 1, color);
+    }
+    if (h === sim.selectedHuman) {
+      g.lineStyle(1, 0xffe14d, 1);
+      g.strokeRect(px - 7, py - 12, 15, 14);
     }
   }
 
@@ -901,6 +988,28 @@ export class WorldScene extends Phaser.Scene {
           g.lineStyle(4, 0xff8030, im.t * 1.6);
           g.strokeCircle(x, y, (0.6 - im.t) * 220 + im.r * CELL);
         }
+      } else if (im.kind === 'bomb') {
+        flash = Math.max(flash, im.t * 0.15);
+        g.fillStyle(0xffa040, im.t);
+        g.fillCircle(x, y, (0.8 - im.t) * 30 + 6);
+        g.fillStyle(0x4a4040, im.t * 0.7);
+        g.fillCircle(x + 4, y - (0.8 - im.t) * 30, 8 + (0.8 - im.t) * 16);
+      } else if (im.kind === 'nuke') {
+        // Fireball, shockwave, then a rising mushroom cloud.
+        const k = 1 - im.t / 6; // 0 → 1 over the effect
+        const R = im.r * CELL;
+        flash = Math.max(flash, Math.max(0, 1 - k * 4));
+        g.lineStyle(6, 0xffffff, Math.max(0, 0.8 - k * 1.5));
+        g.strokeCircle(x, y, R * (0.3 + k * 2.5));
+        g.fillStyle(0xffd27a, Math.max(0, 0.9 - k));
+        g.fillCircle(x, y, R * (0.4 + k * 0.5));
+        const top = y - R * (0.5 + k * 2.2);
+        g.fillStyle(0x8a6a5a, Math.max(0, 0.85 - k * 0.6));
+        g.fillRect(x - R * 0.12, top, R * 0.24, y - top);
+        g.fillStyle(0xc8805a, Math.max(0, 0.9 - k * 0.6));
+        g.fillEllipse(x, top, R * (0.9 + k * 0.8), R * (0.5 + k * 0.3));
+        g.fillStyle(0xffb070, Math.max(0, 0.6 - k * 0.5));
+        g.fillEllipse(x, top + R * 0.12, R * (0.6 + k * 0.5), R * 0.25);
       } else if (im.kind === 'quake') {
         for (let k = 0; k < 3; k++) {
           const p = (1 - im.t / 0.8 + k * 0.25) % 1;
@@ -917,14 +1026,15 @@ export class WorldScene extends Phaser.Scene {
 
   private drawLabels(dt: number) {
     const zoom = this.cameras.main.zoom;
-    for (const label of this.labels.values()) label.setScale(1 / zoom);
+    for (const [id, label] of this.labels) label.setScale((sim.villages[id]?.isCapital ? 1 : 0.8) / zoom);
     this.labelAcc += dt;
     if (this.labelAcc < 0.3) return;
     this.labelAcc = 0;
     const praying = new Set(sim.wishes.map((w) => w.village));
     // Declutter: biggest nations claim label space first; overlapping smaller labels are hidden.
     const placed: [number, number, number, number][] = [];
-    const order = [...sim.villages].sort((a, b) => b.era - a.era || b.pop - a.pop);
+    // Capitals first (they carry the nation's name), then the larger cities.
+    const order = [...sim.villages].sort((a, b) => Number(b.isCapital) - Number(a.isCapital) || b.pop - a.pop);
     const visible = new Set<number>();
     for (const v of order) {
       if (!v.alive) continue;
@@ -956,7 +1066,10 @@ export class WorldScene extends Phaser.Scene {
       label.setVisible((settings.labels && visible.has(v.id)) || v === sim.selectedVillage);
       if (!v.alive) continue;
       const flags = `${v.enemies.size ? ' ⚔️' : ''}${praying.has(v.id) ? ' 🙏' : ''}${v.religion === 'god' ? ' ✨' : ''}`;
-      label.setText(`${ERAS[v.era].icon} ${v.name} · ${formatPop(v.people)}${flags}`);
+      if (v.isCapital) {
+        const total = sim.citiesOf(v).reduce((n, c) => n + c.people, 0);
+        label.setText(`${ERAS[v.era].icon} ${v.name} · ${formatPop(total)}${flags}`);
+      } else label.setText(`${v.base} · ${formatPop(v.people)}`);
       label.setColor('#' + v.color.toString(16).padStart(6, '0'));
       label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
     }

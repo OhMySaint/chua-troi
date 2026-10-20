@@ -341,6 +341,14 @@ class AudioEngine {
         this.burst(3, 140, 'lowpass', 1.2, this.sfx, 40);
         this.voice('sine', 45, this.ctx!.currentTime, 2, 0.5, 0.005, this.sfx);
       }, 650);
+    } else if (kind === 'bomb') {
+      this.burst(1.6, 220, 'lowpass', 0.9, this.sfx, 50);
+    } else if (kind === 'nuke') {
+      this.burst(0.3, 6000, 'highpass', 0.6);
+      setTimeout(() => {
+        this.burst(6, 120, 'lowpass', 1.6, this.sfx, 25);
+        this.voice('sine', 28, this.ctx!.currentTime, 5, 0.8, 0.05, this.sfx);
+      }, 400);
     } else if (kind === 'quake') {
       this.burst(3.5, 90, 'lowpass', 1, this.sfx, 40);
       this.voice('sine', 32, t, 3, 0.4, 0.3, this.sfx, false);

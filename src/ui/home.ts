@@ -4,13 +4,14 @@ import { session } from '../net/session';
 import { listSaves, loadFrom } from '../save';
 import { saveSettings, settings } from '../settings';
 import { GOOGLE_CLIENT_ID, googleProfile, googleSignOut, onProfile, renderGoogleButton } from '../net/google';
-import { openMultiplayer } from './multiplayer';
+import { hostRoom, openMultiplayer } from './multiplayer';
 import { openSaves } from './saves';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
 
 let home: HTMLDivElement;
-let view: 'main' | 'solo' | 'settings' | 'bye' = 'main';
+let view: 'main' | 'solo' | 'setup' | 'msetup' | 'settings' | 'bye' = 'main';
+const setup = { layout: 'random' as 'random' | 'halves', tribes: 12 };
 
 /** The title screen: a living world drifts by behind the menu. */
 export function mountHome() {
@@ -27,8 +28,24 @@ export function mountHome() {
         view = 'solo';
         break;
       case 'new':
-        sim.newWorld();
+        setup.layout = 'random';
+        view = 'setup';
+        break;
+      case 'start':
+        sim.newWorld(undefined, { layout: setup.layout, tribes: setup.tribes });
         return enterGame();
+      case 'layout':
+        setup.layout = b.dataset.value as 'random' | 'halves';
+        break;
+      case 'mhost':
+        sim.newWorld(undefined, { layout: setup.layout, tribes: setup.tribes });
+        enterGame();
+        hostRoom();
+        return;
+      case 'mjoin':
+        enterGame();
+        openMultiplayer();
+        return;
       case 'continue':
         try {
           await loadFrom('auto');
@@ -42,9 +59,9 @@ export function mountHome() {
         openSaves();
         return;
       case 'multi':
-        enterGame();
-        openMultiplayer();
-        return;
+        setup.layout = 'halves';
+        view = 'msetup';
+        break;
       case 'settings':
         view = 'settings';
         break;
@@ -63,7 +80,16 @@ export function mountHome() {
     render();
   });
 
-  home.addEventListener('input', onSetting);
+  home.addEventListener('input', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (t.id === 'tribes') {
+      setup.tribes = Number(t.value);
+      const out = home.querySelector('#tribes-out');
+      if (out) out.textContent = setup.tribes ? `${setup.tribes} bộ lạc` : 'Thế giới trống';
+      return;
+    }
+    onSetting(e);
+  });
   home.addEventListener('mouseover', (e) => {
     if ((e.target as HTMLElement).closest('.menu button')) audio.hover();
   });
@@ -113,6 +139,7 @@ function settingsHTML(backAction: string) {
     ${check('muted', 'Tắt tiếng (phím M)')}
     ${check('particles', 'Hiện mưa, tuyết rơi')}
     ${check('labels', 'Hiện tên quốc gia trên bản đồ')}
+    ${check('speech', 'Hiện lời nói của dân khi zoom gần')}
     <label class="set"><span>⏩ Tốc độ khi bắt đầu</span><input type="range" min="1" max="8" step="1" data-set="speed" value="${settings.speed}"></label>
     <button data-go="${backAction}">← Quay lại</button>
   </div>`;
@@ -209,6 +236,26 @@ async function render() {
       ${auto ? `<button data-go="continue">⏵ Tiếp tục<small>Năm ${auto.year} · ${esc(auto.era)}</small></button>` : ''}
       <button data-go="new">🌍 Thế giới mới</button>
       <button data-go="load">📂 Tải thế giới</button>
+      <button data-go="back">← Quay lại</button>
+    </div>`;
+  } else if (view === 'setup' || view === 'msetup') {
+    const opt = (v: string, label: string, sub: string) =>
+      `<button data-go="layout" data-value="${v}" class="${setup.layout === v ? 'active' : ''}">${label}<small>${sub}</small></button>`;
+    body = `<div class="menu settings">
+      <h3>${view === 'setup' ? '🌍 Thế giới mới' : '👥 Thế giới chung'}</h3>
+      <div class="set-title">Bản đồ</div>
+      <div class="choice">
+        ${opt('random', '🎲 Ngẫu nhiên', '3–5 lục địa lớn')}
+        ${opt('halves', '⚖️ Chia đôi', '2 lục địa cân bằng, mỗi thần một bên')}
+      </div>
+      <label class="set"><span>🏕️ Bộ lạc thời đồ đá</span><input id="tribes" type="range" min="0" max="30" step="1" value="${setup.tribes}"></label>
+      <div class="muted" id="tribes-out">${setup.tribes ? `${setup.tribes} bộ lạc` : 'Thế giới trống'}</div>
+      <p class="muted">${setup.tribes ? 'Các bộ lạc sẽ tự lớn thành thành bang, rồi quốc gia.' : 'Chưa có ai — dùng 🧑 Người để gieo dân; họ sẽ tự lập bộ lạc và phát triển.'}</p>
+      ${
+        view === 'setup'
+          ? '<button data-go="start">▶ Bắt đầu</button>'
+          : '<button data-go="mhost">🌍 Tạo phòng với thế giới này</button><button data-go="mjoin">🚪 Vào phòng của bạn bè</button>'
+      }
       <button data-go="back">← Quay lại</button>
     </div>`;
   } else if (view === 'settings') {

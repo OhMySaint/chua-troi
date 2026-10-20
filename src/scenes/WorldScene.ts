@@ -3,7 +3,7 @@ import { sim, ui, type Tool } from '../core';
 import type { Animal } from '../sim/Animals';
 import type { Human } from '../sim/Sim';
 import { ERAS } from '../sim/eras';
-import { CELL, Cover, H, N, RH, RS, RW, W, type Weather, regionOf } from '../world/constants';
+import { CELL, Cover, H, N, W, type Weather } from '../world/constants';
 import { PH, PW } from '../world/render';
 import { TerrainLayer } from './TerrainLayer';
 import { BuildingLayer } from './BuildingLayer';
@@ -564,6 +564,30 @@ export class WorldScene extends Phaser.Scene {
       g.lineStyle(Math.max(2, 3 / zoom), 0xff3030, 0.6 + 0.3 * Math.sin(t / 150));
       g.strokeCircle(wf.cx * CELL + 4, wf.cy * CELL + 4, wf.radius * CELL + 6);
     }
+    const pf = sim.peaceFrom;
+    if (pf?.alive) {
+      g.lineStyle(Math.max(2, 3 / zoom), 0x9cff9c, 0.6 + 0.3 * Math.sin(t / 150));
+      g.strokeCircle(pf.cx * CELL + 4, pf.cy * CELL + 4, pf.radius * CELL + 6);
+    }
+    // Treaties of friendship: a dotted bond of light between the two capitals.
+    for (const n of sim.nations()) {
+      for (const o of n.pacts) {
+        const m = sim.villages[o];
+        if (!m?.alive || m.id < n.id) continue;
+        const x1 = n.cx * CELL + 4;
+        const y1 = n.cy * CELL + 4;
+        const x2 = m.cx * CELL + 4;
+        const y2 = m.cy * CELL + 4;
+        const len = Math.hypot(x2 - x1, y2 - y1);
+        const dots = Math.min(80, Math.floor(len / 24));
+        const shift = (t / 1200) % 1;
+        g.fillStyle(0xd8ffd0, 0.75);
+        for (let k = 0; k < dots; k++) {
+          const f = (k + shift) / dots;
+          g.fillCircle(x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, Math.max(2, 2.5 / zoom));
+        }
+      }
+    }
 
     for (const a of sim.animals.list) {
       const px = a.x * CELL;
@@ -854,36 +878,39 @@ export class WorldScene extends Phaser.Scene {
     const px = 1 / cam.zoom; // one screen pixel in world units
     const fall = sim.paused ? 0 : dt * Math.max(1, sim.speed * 0.6);
 
-    // Cloud cover and heat haze, region by region.
-    const RP = RS * CELL;
-    const rx0 = Math.max(0, Math.floor(view.x / RP));
-    const rx1 = Math.min(RW - 1, Math.floor(view.right / RP));
-    const ry0 = Math.max(0, Math.floor(view.y / RP));
-    const ry1 = Math.min(RH - 1, Math.floor(view.bottom / RP));
-    this.vis = { rain: 0, storm: 0, snow: 0, regions: (rx1 - rx0 + 1) * (ry1 - ry0 + 1) };
-    for (let ry = ry0; ry <= ry1; ry++) {
-      for (let rx = rx0; rx <= rx1; rx++) {
-        const wr = w.regionWeather[ry * RW + rx];
+    // Cloud cover and heat haze: each weather system is a drifting clump of soft cloud.
+    for (const sy of w.systems) {
+      const a = CLOUD[sy.kind];
+      const k = Math.max(0, Math.min(1, sy.age / 12, sy.life / 8));
+      const cx = sy.x * CELL;
+      const cy = sy.y * CELL;
+      const R = sy.r * CELL;
+      if (!a || k <= 0 || cx + R < view.x || cx - R > view.right || cy + R < view.y || cy - R > view.bottom) continue;
+      const puffs = Math.min(14, 5 + Math.floor(sy.r / 12));
+      for (let p = 0; p < puffs; p++) {
+        const ang = sy.seed + p * 2.399;
+        const dist = (p === 0 ? 0 : 0.25 + ((p * 37 + sy.seed) % 50) / 100) * R * (0.4 + 0.6 * k);
+        const ox = Math.cos(ang) * dist + Math.sin(this.time.now / 7000 + p) * R * 0.04;
+        const oy = Math.sin(ang) * dist * 0.8 + Math.cos(this.time.now / 9000 + p) * R * 0.04;
+        const core = sy.kind === 'storm' && dist < R * 0.4;
+        g.fillStyle(sy.kind === 'drought' ? 0xff7a30 : core ? 0x15171d : sy.kind === 'snow' ? 0xdfe6f2 : 0x2a2e38, a * 0.8 * k * (core ? 1.3 : 1));
+        g.fillCircle(cx + ox, cy + oy, R * (0.32 + ((p * 13) % 5) * 0.04) * (0.5 + 0.5 * k));
+      }
+    }
+    // What the view is under, for the ambience (sampled on a coarse grid).
+    this.vis = { rain: 0, storm: 0, snow: 0, regions: 0 };
+    for (let sy = 0; sy < 8; sy++) {
+      for (let sx = 0; sx < 8; sx++) {
+        const wr = w.weatherXY((view.x + ((sx + 0.5) / 8) * view.width) / CELL, (view.y + ((sy + 0.5) / 8) * view.height) / CELL);
+        this.vis.regions++;
         if (wr === 'rain') this.vis.rain++;
         else if (wr === 'storm') this.vis.storm++;
         else if (wr === 'snow') this.vis.snow++;
-        const a = CLOUD[wr];
-        if (!a) continue;
-        // Soft clumps of cloud rather than hard squares.
-        g.fillStyle(wr === 'drought' ? 0xff7a30 : 0x2a2e38, a * 0.45);
-        const cx = rx * RP + RP / 2;
-        const cy = ry * RP + RP / 2;
-        const seed = (rx * 92821 + ry * 68917) % 997;
-        for (let k = 0; k < 5; k++) {
-          const ox = Math.sin(seed + k * 2.1 + this.time.now / 9000) * RP * 0.3;
-          const oy = Math.cos(seed * 1.3 + k * 1.7 + this.time.now / 11000) * RP * 0.3;
-          g.fillCircle(cx + ox, cy + oy, RP * (0.42 + (k % 3) * 0.08));
-        }
       }
     }
 
     // Rain and snow fall only where it is raining or snowing.
-    const weatherAtPx = (x: number, y: number) => w.regionWeather[regionOf(Math.max(0, Math.min(W - 1, (x / CELL) | 0)), Math.max(0, Math.min(H - 1, (y / CELL) | 0)))];
+    const weatherAtPx = (x: number, y: number) => w.weatherXY(x / CELL, y / CELL);
     g.lineStyle(1.5 * px, 0xaecbff, 0.55);
     for (let i = 0; i < (settings.particles ? this.drops.length : 0); i++) {
       const d = this.drops[i];
@@ -1068,8 +1095,9 @@ export class WorldScene extends Phaser.Scene {
       const flags = `${v.enemies.size ? ' ⚔️' : ''}${praying.has(v.id) ? ' 🙏' : ''}${v.religion === 'god' ? ' ✨' : ''}`;
       if (v.isCapital) {
         const total = sim.citiesOf(v).reduce((n, c) => n + c.people, 0);
-        label.setText(`${ERAS[v.era].icon} ${v.name} · ${formatPop(total)}${flags}`);
-      } else label.setText(`${v.base} · ${formatPop(v.people)}`);
+        const crown = sim.citiesOf(v).length > 1 ? '👑 ' : '';
+        label.setText(`${crown}${ERAS[v.era].icon} ${v.name} · ${formatPop(total)}${flags}`);
+      } else label.setText(`${v.base}${v.enemies.size ? ' ⚔️' : ''}`);
       label.setColor('#' + v.color.toString(16).padStart(6, '0'));
       label.setPosition(v.cx * CELL + 4, v.cy * CELL + 8 - [18, 22, 30, 36, 36, 66, 82][v.era]);
     }

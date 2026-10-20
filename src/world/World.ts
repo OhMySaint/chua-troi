@@ -13,6 +13,7 @@ import {
   W,
   type Weather,
   regionOf,
+  RS,
 } from './constants';
 import { fbm, rng } from './noise';
 
@@ -22,6 +23,28 @@ export type WorldEvent =
   | { type: 'impact'; x: number; y: number; r: number; kind: 'meteor' | 'quake' | 'volcano' };
 
 const WEATHER_TEMP: Record<Weather, number> = { sun: 24, rain: 14, storm: 10, snow: -10, drought: 36 };
+const WEATHERS: Weather[] = ['sun', 'rain', 'storm', 'snow', 'drought'];
+/** Weather is resolved on blocks of WB × WB cells. */
+const WB = 16;
+const WBW = Math.ceil(W / WB);
+const WBH = Math.ceil(H / WB);
+/** How many weather systems the sky holds at once, left to itself. */
+const MAX_SYSTEMS = 11;
+
+/** A travelling patch of weather: a rain front, a storm cell, a snowfall, a heat dome. */
+export interface WeatherSystem {
+  x: number;
+  y: number;
+  r: number;
+  kind: Weather;
+  vx: number;
+  vy: number;
+  life: number;
+  age: number;
+  /** Fixed per system, shapes its ragged edge. */
+  seed: number;
+}
+
 const WEATHER_SEA: Record<Weather, number> = { sun: 0, rain: 0.015, storm: 0.045, snow: -0.01, drought: -0.008 };
 const RN = RW * RH;
 const NEIGHBORS = [1, -1, W, -W];
@@ -53,12 +76,17 @@ export class World {
   temperature = 20;
   /** The most common weather (for display). */
   weather: Weather = 'sun';
+  /** The prevailing weather of each region (derived from the systems each tick). */
   regionWeather: Weather[] = new Array(RN).fill('sun');
   regionTemp = new Float32Array(RN).fill(20);
   /** Climate per region, from the land itself: 0 temperate, 1 cold, 2 maritime, 3 arid, 4 highland. */
   regionClimate = new Uint8Array(RN);
-  /** Seconds until each region's weather changes on its own. */
-  regionTimer = new Float32Array(RN);
+  /** Weather systems drifting across the map with the wind. */
+  systems: WeatherSystem[] = [];
+  /** Weather on each WB×WB block (index into WEATHERS), rebuilt from the systems. */
+  private wgrid = new Uint8Array(WBW * WBH);
+  private regionTarget = new Float32Array(RN).fill(24);
+  private sumSea = 0;
   autoWeather = true;
   weatherTimer = 60;
   time = 0;
@@ -86,7 +114,7 @@ export class World {
     this.phase = 0;
     this.fireCount = 0;
     this.regionTemp.fill(20);
-    this.regionTimer.fill(0);
+    this.systems = [];
     this.autoWeather = true;
     this.seaLevel = BASE_SEA;
     this.temperature = 20;
@@ -213,34 +241,165 @@ export class World {
     }
   }
 
-  /** Set the weather everywhere. */
+  /** Set the weather everywhere: a blanket of one kind (or clear skies) that holds while auto weather is off. */
   setWeather(w: Weather) {
     this.weather = w;
     this.weatherTimer = 50 + rand() * 60;
-    for (let r = 0; r < RN; r++) this.setRegionWeather(r, w);
-  }
-
-  setRegionWeather(r: number, w: Weather, duration = 50 + rand() * 60) {
-    if (r < 0 || r >= RN) return;
-    this.regionWeather[r] = w;
-    this.regionTimer[r] = duration;
-  }
-
-  /** Set the weather in every region touched by a circle (cells). */
-  paintWeather(x: number, y: number, radius: number, w: Weather, temp?: number) {
-    for (let ry = 0; ry < RH; ry++) {
-      for (let rx = 0; rx < RW; rx++) {
-        const cx = Math.max(rx * 64, Math.min(x, rx * 64 + 63));
-        const cy = Math.max(ry * 64, Math.min(y, ry * 64 + 63));
-        if (Math.hypot(cx - x, cy - y) > radius) continue;
-        this.setRegionWeather(ry * RW + rx, w, 90 + rand() * 60);
-        if (temp !== undefined) this.regionTemp[ry * RW + rx] = Math.max(this.regionTemp[ry * RW + rx], temp);
+    this.systems = [];
+    if (w !== 'sun') {
+      for (let y = 100; y < H; y += 200) {
+        for (let x = 100; x < W; x += 200) this.systems.push({ x, y, r: 175, kind: w, vx: 0, vy: 0, life: 1e9, age: 1e3, seed: (x * 7 + y * 13) % 997 });
       }
+    }
+    this.rebuildWeather();
+  }
+
+  /** The god's brush: clear the skies here, then (unless it is sun) set down a new system of that kind. */
+  paintWeather(x: number, y: number, radius: number, w: Weather, temp?: number) {
+    for (const s of this.systems) {
+      if (Math.hypot(s.x - x, s.y - y) < radius + s.r * 0.5) s.life = Math.min(s.life, 5);
+    }
+    if (w !== 'sun') {
+      const [vx, vy] = this.wind(y);
+      this.systems.push({ x, y, r: radius, kind: w, vx: vx * 0.25, vy: vy * 0.25, life: 120 + rand() * 60, age: 12, seed: Math.floor(rand() * 997) });
+    }
+    if (temp !== undefined) {
+      for (let ry = 0; ry < RH; ry++) {
+        for (let rx = 0; rx < RW; rx++) {
+          if (Math.hypot(rx * RS + RS / 2 - x, ry * RS + RS / 2 - y) > radius + RS / 2) continue;
+          this.regionTemp[ry * RW + rx] = Math.max(this.regionTemp[ry * RW + rx], temp);
+        }
+      }
+    }
+    this.rebuildWeather();
+  }
+
+  /** Prevailing wind at a latitude (cells/s): westerlies in the north, trade winds in the south. */
+  private wind(y: number): [number, number] {
+    const lat = y / H;
+    const dir = lat < 0.45 ? 1 : lat > 0.6 ? -1 : rand() < 0.5 ? 1 : -1;
+    return [dir * (0.6 + rand() * 1.0), (rand() - 0.5) * 0.6];
+  }
+
+  /** A new system, born where the climate favours it. */
+  private spawnSystem() {
+    const x = rand() * W;
+    const y = rand() * H;
+    const kind = this.climateWeather(regionOf(Math.min(W - 1, x | 0), Math.min(H - 1, y | 0)));
+    if (kind === 'sun') return;
+    let [vx, vy] = this.wind(y);
+    const big = kind === 'drought' ? 1.6 : kind === 'storm' ? 0.7 : 1;
+    if (kind === 'drought') {
+      vx *= 0.2;
+      vy *= 0.2;
+    } else if (kind === 'storm') {
+      vx *= 1.4;
+    }
+    this.systems.push({
+      x,
+      y,
+      r: (45 + rand() * 60) * big,
+      kind,
+      vx,
+      vy,
+      life: (90 + rand() * 130) * (kind === 'drought' ? 1.6 : 1),
+      age: 0,
+      seed: Math.floor(rand() * 997),
+    });
+  }
+
+  /** Move, age and spawn systems, then resolve the weather on every block. */
+  private weatherTick(dt: number) {
+    if (this.autoWeather) {
+      for (const s of this.systems) {
+        if (s.life > 1e6) s.life = 40 + rand() * 60; // a god's blanket lifts once the sky runs itself again
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.life -= dt;
+        s.age += dt;
+      }
+      this.systems = this.systems.filter((s) => s.life > 0 && s.x > -s.r && s.x < W + s.r && s.y > -s.r && s.y < H + s.r);
+      if (this.systems.length < MAX_SYSTEMS && rand() < 0.03) this.spawnSystem();
+    }
+    this.rebuildWeather();
+    // Lightning under storm cells.
+    for (const s of this.systems) {
+      if (s.kind === 'storm' && rand() < 0.012 * this.strength(s) * (s.r / 50)) this.strikeIn(s.x, s.y, s.r * 0.6);
     }
   }
 
+  /** 0→1 as a system builds, 1→0 as it dies away. */
+  private strength(s: WeatherSystem) {
+    return Math.max(0, Math.min(1, s.age / 12, s.life / 8));
+  }
+
+  /** Resolve each block's weather from the systems over it; summarise per region. */
+  rebuildWeather() {
+    const g = this.wgrid;
+    g.fill(0);
+    const sev = [0, 2, 4, 3, 1]; // which kind wins where systems overlap
+    for (const s of this.systems) {
+      const k = this.strength(s);
+      if (k <= 0) continue;
+      const r = s.r * (0.35 + 0.65 * k);
+      const kind = WEATHERS.indexOf(s.kind);
+      const bx0 = Math.max(0, Math.floor((s.x - r * 1.2) / WB));
+      const bx1 = Math.min(WBW - 1, Math.floor((s.x + r * 1.2) / WB));
+      const by0 = Math.max(0, Math.floor((s.y - r * 1.2) / WB));
+      const by1 = Math.min(WBH - 1, Math.floor((s.y + r * 1.2) / WB));
+      for (let by = by0; by <= by1; by++) {
+        for (let bx = bx0; bx <= bx1; bx++) {
+          const dx = bx * WB + WB / 2 - s.x;
+          const dy = by * WB + WB / 2 - s.y;
+          // A lumpy edge: the reach varies with direction, fixed per system.
+          const ang = Math.atan2(dy, dx);
+          const reach = r * (0.82 + 0.13 * Math.sin(ang * 3 + s.seed) + 0.08 * Math.sin(ang * 5 + s.seed * 1.7));
+          const d = Math.hypot(dx, dy);
+          if (d > reach) continue;
+          let kk = kind;
+          // A storm's rim is ordinary rain; rain falls as snow where it is freezing.
+          if (kk === 2 && d > reach * 0.65) kk = 1;
+          if (kk === 1 && this.regionTemp[regionOf(Math.min(W - 1, bx * WB), Math.min(H - 1, by * WB))] - this.latChill[Math.min(H - 1, by * WB + 8) * W + Math.min(W - 1, bx * WB + 8)] < -1) kk = 3;
+          const i = by * WBW + bx;
+          if (sev[kk] > sev[g[i]]) g[i] = kk;
+        }
+      }
+    }
+    // Per region: the prevailing kind and the temperature it pulls towards.
+    let sea = 0;
+    const per = RS / WB;
+    for (let ry = 0; ry < RH; ry++) {
+      for (let rx = 0; rx < RW; rx++) {
+        const counts = [0, 0, 0, 0, 0];
+        let temp = 0;
+        let n = 0;
+        for (let by = ry * per; by < Math.min(WBH, ry * per + per); by++) {
+          for (let bx = rx * per; bx < Math.min(WBW, rx * per + per); bx++) {
+            const k = g[by * WBW + bx];
+            counts[k]++;
+            temp += WEATHER_TEMP[WEATHERS[k]];
+            sea += WEATHER_SEA[WEATHERS[k]];
+            n++;
+          }
+        }
+        const r = ry * RW + rx;
+        let best = 0;
+        for (let k = 1; k < 5; k++) if (counts[k] * 2 > counts[best] && counts[k] > counts[best] * 0.5 && counts[k] >= n * 0.3) best = counts[k] > counts[best] || best === 0 ? k : best;
+        this.regionWeather[r] = WEATHERS[best];
+        this.regionTarget[r] = n ? temp / n : 24;
+      }
+    }
+    this.sumSea = sea / (WBW * WBH);
+  }
+
+  /** Weather at cell (x, y). */
+  weatherXY(x: number, y: number): Weather {
+    const bx = Math.max(0, Math.min(WBW - 1, (x / WB) | 0));
+    const by = Math.max(0, Math.min(WBH - 1, (y / WB) | 0));
+    return WEATHERS[this.wgrid[by * WBW + bx]];
+  }
   weatherAt(i: number): Weather {
-    return this.regionWeather[regionOf(i % W, Math.floor(i / W))];
+    return this.weatherXY(i % W, Math.floor(i / W));
   }
   rainingAt(i: number) {
     const w = this.weatherAt(i);
@@ -273,17 +432,8 @@ export class World {
     }
   }
 
-  /** Weather a region drifts to: often its neighbour's (fronts travel), else what its climate favours. */
-  private nextWeather(r: number): Weather {
-    const rx = r % RW;
-    const ry = Math.floor(r / RW);
-    if (rand() < 0.45) {
-      const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(rand() * 4)];
-      const nx = rx + dx;
-      const ny = ry + dy;
-      if (nx >= 0 && ny >= 0 && nx < RW && ny < RH) return this.regionWeather[ny * RW + nx];
-    }
-    void rx;
+  /** What weather a region's climate tends to brew. */
+  private climateWeather(r: number): Weather {
     const roll = rand();
     switch (this.regionClimate[r]) {
       case 1: // cold north
@@ -392,25 +542,19 @@ export class World {
   tick(dt: number) {
     this.time += dt;
     const night = 1 - this.daylight();
+    this.weatherTick(dt);
     const counts: Record<string, number> = {};
     let sumTemp = 0;
-    let sumSea = 0;
     for (let r = 0; r < RN; r++) {
-      if (this.autoWeather) {
-        this.regionTimer[r] -= dt;
-        if (this.regionTimer[r] <= 0) this.setRegionWeather(r, this.nextWeather(r));
-      }
       const wr = this.regionWeather[r];
-      this.regionTemp[r] += (WEATHER_TEMP[wr] - night * 6 - this.regionTemp[r]) * 0.02;
+      this.regionTemp[r] += (this.regionTarget[r] - night * 6 - this.regionTemp[r]) * 0.02;
       sumTemp += this.regionTemp[r];
-      sumSea += WEATHER_SEA[wr];
       counts[wr] = (counts[wr] ?? 0) + 1;
-      // Lightning in stormy regions.
-      if (wr === 'storm' && rand() < 0.02) this.strikeIn(r);
     }
     this.temperature = sumTemp / RN;
-    this.weather = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'sun') as Weather;
-    this.seaLevel += (BASE_SEA + (sumSea / RN) * 1.2 - this.seaLevel) * 0.008;
+    const rainy = Object.entries(counts).filter(([k]) => k !== 'sun').sort((a, b) => b[1] - a[1])[0];
+    this.weather = (rainy && rainy[1] > RN * 0.25 ? rainy[0] : 'sun') as Weather;
+    this.seaLevel += (BASE_SEA + this.sumSea * 1.2 - this.seaLevel) * 0.008;
 
     for (const v of this.vents) {
       v.t -= dt;
@@ -433,7 +577,7 @@ export class World {
       // Weather is sampled at a jittered point so region edges come out ragged, not square.
       const jx = Math.max(0, Math.min(W - 1, x + ((this.jitter[i] - 0.5) * 40) | 0));
       const jy = Math.max(0, Math.min(H - 1, y + ((this.jitter[(i * 7) % N] - 0.5) * 40) | 0));
-      const wr = this.regionWeather[regionOf(jx, jy)];
+      const wr = WEATHERS[this.wgrid[((jy / WB) | 0) * WBW + ((jx / WB) | 0)]];
       const raining = wr === 'rain' || wr === 'storm';
       const snowing = wr === 'snow';
       const drought = wr === 'drought';
@@ -526,12 +670,11 @@ export class World {
     this.fireCount = fires * 4;
   }
 
-  private strikeIn(r: number) {
-    const rx = (r % RW) * 64;
-    const ry = Math.floor(r / RW) * 64;
+  private strikeIn(cx: number, cy: number, radius: number) {
     for (let tries = 0; tries < 10; tries++) {
-      const x = rx + Math.floor(rand() * 64);
-      const y = ry + Math.floor(rand() * 64);
+      const x = Math.floor(cx + (rand() * 2 - 1) * radius);
+      const y = Math.floor(cy + (rand() * 2 - 1) * radius);
+      if (x < 0 || y < 0) continue;
       if (x >= W || y >= H) continue;
       const i = y * W + x;
       if (this.isWater(i)) continue;

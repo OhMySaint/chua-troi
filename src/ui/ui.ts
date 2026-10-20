@@ -50,8 +50,8 @@ const TOOL_GROUPS: { name: string; tools: ToolDef[] }[] = [
   {
     name: 'Thần quyền',
     tools: [
-      { id: 'war', label: '⚔️ Gây chiến', hint: 'Bấm nước tấn công, rồi bấm nước bị tấn công (Esc để hủy)' },
-      { id: 'peace', label: '🕊️ Hòa bình', hint: 'Bấm vào một nước để chấm dứt mọi cuộc chiến của họ' },
+      { id: 'war', label: '⚔️ Gây chiến', hint: 'Bấm nước tấn công, rồi bấm nước bị tấn công. Bấm 2 thành của cùng một nước để gây nội chiến ly khai (Esc để hủy)' },
+      { id: 'peace', label: '🕊️ Hòa bình', hint: 'Bấm 2 nước: họ ngừng chiến và ký hòa ước hữu nghị — giao thương, văn hóa, công nghệ cùng phát triển' },
       { id: 'inspect', label: '🔍 Quan sát', hint: 'Bấm vào người hoặc bộ tộc để xem câu chuyện của họ' },
       { id: 'pan', label: '✋ Kéo', hint: 'Kéo bản đồ (phím H). Trackpad: vuốt 2 ngón để di chuyển, chụm để zoom, hoặc giữ ⌥ Option + kéo' },
     ],
@@ -186,7 +186,7 @@ export function mountUI() {
     if (e.key === 'i') ui.tool = 'inspect';
     if (e.key === 'h') ui.tool = 'pan';
     if (e.key === 'm') toggleMute();
-    if (e.key === 'Escape') sim.warFrom = null;
+    if (e.key === 'Escape') sim.warFrom = sim.peaceFrom = null;
     if (e.key === '+' || e.key === '=') ui.zoomCmd = 'in';
     if (e.key === '-') ui.zoomCmd = 'out';
     if (e.key === '0') ui.zoomCmd = 'fit';
@@ -387,6 +387,7 @@ function nationBlock(v: Village) {
     ${v.isCapital ? `🏛️ Thủ đô của ${esc(v.nationName)}` : `🏙️ Thành phố của <b>${esc(v.nationName)}</b> (thủ đô ${esc(cap.base)})`}
     <br>🏘️ ${cities.length} thành phố · 👥 ${formatPop(cities.reduce((n, c) => n + c.people, 0))} dân cả nước
     ${cap.allies.size ? `<br>🛡️ Đồng minh: ${names(cap.allies)}` : ''}
+    ${cap.pacts.size ? `<br>🕊️ Hòa ước hữu nghị: ${names(cap.pacts)}` : ''}
     ${army ? `<br>${army}` : ''}
     ${v.trauma > 0.2 ? `<br>🥀 Tổn thương sau thảm họa: ${Math.round(v.trauma * 100)}%` : ''}
   </div>`;

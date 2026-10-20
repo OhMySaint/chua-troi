@@ -238,6 +238,8 @@ export class Village {
   warSet = new Set<number>();
   /** Capital ids of allied nations. */
   allies = new Set<number>();
+  /** Capital ids of nations bound to this one by a god's peace treaty: no war, open trade, shared ideas. */
+  pacts = new Set<number>();
   // The nation's army (on a capital): rally at the front, march in formation, then lay siege.
   armyPhase: 'none' | 'rally' | 'march' | 'siege' = 'none';
   armyX = 0;
@@ -323,9 +325,9 @@ export class Village {
     const c = this.capital;
     return `${c.title} ${c.base}`;
   }
-  /** A capital is called by its nation's name; other cities by their own, with their nation. */
+  /** A capital is called by its nation's name; other cities just by their own. */
   get name() {
-    return this.isCapital ? `${this.title} ${this.base}` : `${this.base} (${this.nationName})`;
+    return this.isCapital ? `${this.title} ${this.base}` : this.base;
   }
   get ruler() {
     return this.leaderName ? `${this.culture.rulers[this.era]} ${this.leaderName}` : '';
@@ -399,6 +401,8 @@ interface War {
   a: number;
   b: number;
   start: number;
+  /** No conquest or treaty before this time (for wars the gods start). */
+  minEnd?: number;
 }
 
 export class Sim {
@@ -408,6 +412,8 @@ export class Sim {
   villages: Village[] = [];
   wars: War[] = [];
   wishes: Wish[] = [];
+  /** World time before which no new prayer is heard (prayers are rare and precious). */
+  nextWishAt = 0;
   /** The two gods' names; god 1 only acts in multiplayer. */
   godNames = ['Đấng Sáng Thế', 'Đấng Hắc Nguyệt'];
   /** How many gods the world has known (1 alone, 2 once a second god has joined). */
@@ -540,6 +546,7 @@ export class Sim {
     this.airstrikes = [];
     this.wars = [];
     this.warFrom = null;
+    this.peaceFrom = null;
     this.world.generate(seed, layout);
     this.startTime = this.world.time;
     this.humans = [];
@@ -547,6 +554,7 @@ export class Sim {
     Village.all = this.villages;
     this.wars = [];
     this.wishes = [];
+    this.nextWishAt = 0;
     this.strikes = [];
     this.log = [];
     this.toasts = [];
@@ -626,32 +634,134 @@ export class Sim {
     this.stats.meteors++;
   }
 
-  /** The nation picked as aggressor with the war tool, waiting for its target. */
+  /** The city picked first with the war tool, waiting for its target. */
   warFrom: Village | null = null;
+  /** The city picked first with the peace tool. */
+  peaceFrom: Village | null = null;
 
-  /** War tool: first click picks the aggressor, second click picks the nation it attacks. */
+  /** War tool: first click picks the aggressor, second the city it attacks (a city of the same nation rises in revolt). */
   incite(x: number, y: number) {
-    const v = this.villageNear(x, y, 14);
-    if (!v) return;
-    if (!this.warFrom?.alive || this.warFrom === v) {
-      this.warFrom = this.warFrom === v ? null : v;
-      if (this.warFrom) this.toasts.push({ icon: '⚔️', title: `Đã chọn ${v.name}`, text: 'Giờ bấm vào nước mà họ sẽ tấn công (Esc để hủy).' });
+    const city = this.territoryAt(x, y);
+    if (!city) {
+      this.toasts.push({ icon: '⚔️', title: 'Chưa chọn được nước nào', text: 'Hãy bấm vào lãnh thổ của một quốc gia.' });
       return;
     }
-    this.issue({ god: this.me, t: 'war', a: this.warFrom.id, b: v.id });
+    this.peaceFrom = null;
+    if (!this.warFrom?.alive || this.warFrom === city) {
+      this.warFrom = this.warFrom === city ? null : city;
+      if (this.warFrom) this.toasts.push({ icon: '⚔️', title: `Bên tấn công: ${city.isCapital ? city.name : `${city.base} · ${city.capital.name}`}`, text: 'Giờ bấm vào nước bị tấn công. Bấm một thành khác của cùng nước để nó ly khai (Esc để hủy).' });
+      return;
+    }
+    const A = this.warFrom.capital;
+    const B = city.capital;
+    if (A !== B && A.enemies.has(B.id)) {
+      this.toasts.push({ icon: '⚔️', title: 'Đã có chiến tranh', text: `${A.name} và ${B.name} đang đánh nhau rồi.` });
+    } else this.issue({ god: this.me, t: 'war', a: this.warFrom.id, b: city.id });
     this.warFrom = null;
+    this.peaceFrom = null;
+  }
+
+  /** Peace tool: pick two nations; they make peace and bind themselves by treaty. */
+  pacify(x: number, y: number) {
+    const city = this.territoryAt(x, y);
+    if (!city) {
+      this.toasts.push({ icon: '🕊️', title: 'Chưa chọn được nước nào', text: 'Hãy bấm vào lãnh thổ của một quốc gia.' });
+      return;
+    }
+    this.warFrom = null;
+    const v = city.capital;
+    if (!this.peaceFrom?.alive || this.peaceFrom.capital === v) {
+      this.peaceFrom = this.peaceFrom?.capital === v ? null : city;
+      if (this.peaceFrom) this.toasts.push({ icon: '🕊️', title: `Sứ giả hòa bình: ${v.name}`, text: 'Giờ bấm vào nước thứ hai để hai nước ký hòa ước (Esc để hủy).' });
+      return;
+    }
+    const A = this.peaceFrom.capital;
+    if (A.pacts.has(v.id)) this.toasts.push({ icon: '🕊️', title: 'Đã hòa hiếu', text: `${A.name} và ${v.name} đã có hòa ước rồi.` });
+    else this.issue({ god: this.me, t: 'peace', a: A.id, b: v.id });
+    this.peaceFrom = null;
+  }
+
+  /** The city whose territory covers (x, y), or the nearest one if close enough. */
+  territoryAt(x: number, y: number) {
+    let best: Village | null = null;
+    let bd = Infinity;
+    for (const v of this.villages) {
+      if (!v.alive) continue;
+      const d = Math.hypot(v.cx - x, v.cy - y) - v.radius;
+      if (d < bd) {
+        bd = d;
+        best = v;
+      }
+    }
+    return bd < 12 ? best : null;
   }
 
   warBetween(a: number, b: number) {
-    const A = this.villages[a]?.capital;
-    const B = this.villages[b]?.capital;
-    if (!A?.alive || !B?.alive || A === B || A.enemies.has(B.id)) return;
+    const ca = this.villages[a];
+    const cb = this.villages[b];
+    if (!ca?.alive || !cb?.alive || ca === cb) return;
+    // Two cities of one nation: the one that is not the seat breaks away, and the war is a war of independence.
+    if (ca.capital === cb.capital) {
+      const rebel = cb.isCapital ? ca : cb;
+      this.secede(rebel, `${this.godNames[this.actor]} thổi bùng lòng ly khai`);
+    }
+    const A = ca.capital;
+    const B = cb.capital;
+    if (A === B || A.enemies.has(B.id)) return;
+    if (A.pacts.delete(B.id)) {
+      B.pacts.delete(A.id);
+      this.chronicle(A, `📜 Hòa ước giữa ${A.name} và ${B.name} bị xé bỏ.`);
+    }
+    A.allies.delete(B.id);
+    B.allies.delete(A.id);
     this.declareWar(A, B, `vì ${this.godNames[this.actor]} gieo rắc thù hận vào lòng họ`);
+    // A war the gods start is fought out, not settled at the first council.
+    const war = this.wars.find((w) => w.a === A.id && w.b === B.id);
+    if (war) war.minEnd = this.world.time + 90;
   }
 
-  pacify(x: number, y: number) {
-    const v = this.villageNear(x, y, 12);
-    if (v) this.issue({ god: this.me, t: 'peace', v: v.id });
+  /** A city breaks from its nation and becomes a nation of its own. */
+  private secede(city: Village, why: string) {
+    const old = city.capital;
+    if (city.isCapital) return;
+    city.nation = city.id;
+    city.warSet = new Set();
+    city.opinion = new Map([[old.id, -70]]);
+    old.opinion.set(city.id, -70);
+    city.partners = new Set();
+    city.allies = new Set();
+    city.pacts = new Set();
+    city.annexed = 0;
+    city.absorbedBy = -1;
+    city.tech = Math.max(city.tech, old.tech * 0.9);
+    // A banner of its own, unlike any other nation's.
+    const used = new Set(this.nations().map((n) => n.hue));
+    const palette = [...city.culture.colors, 0xc0392b, 0x2e86c1, 0x27ae60, 0x8e44ad, 0xd68910, 0x17a589, 0x6c3483, 0xa04000, 0x1f618d, 0x7d6608];
+    city.hue = palette.find((c) => !used.has(c)) ?? Math.floor(rand() * 0xffffff);
+    for (const h of this.humans) if (h.village === city.id) h.role = 'none';
+    this.chronicle(city, `🔥 ${city.base} ly khai khỏi ${old.name}, lập nên ${city.name} — ${why}.`);
+    this.chronicle(old, `🔥 ${city.base} ly khai, lập nước riêng.`, false);
+    this.toasts.push({ icon: '🔥', title: 'Ly khai!', text: `${city.base} tách khỏi ${old.name}` });
+  }
+
+  /** A god's peace: the two nations end their war and are bound by treaty. */
+  peaceBetween(a: number, b: number, god: number) {
+    const A = this.villages[a]?.capital;
+    const B = this.villages[b]?.capital;
+    if (!A?.alive || !B?.alive || A === B) return;
+    const why = `${this.godNames[god]} giáng xuống ý chỉ hòa bình`;
+    this.makePeace(A, B, why);
+    A.pacts.add(B.id);
+    B.pacts.add(A.id);
+    A.opinion.set(B.id, Math.max(60, A.opinion.get(B.id) ?? 0));
+    B.opinion.set(A.id, Math.max(60, B.opinion.get(A.id) ?? 0));
+    A.partners.add(B.id);
+    B.partners.add(A.id);
+    const [, ca, cb] = this.nearestCities(A, B);
+    this.carveHighway(ca, cb);
+    this.chronicle(A, `🕊️ ${A.name} và ${B.name} ký hòa ước hữu nghị — ${why}. Từ nay hai nước giao thương, học hỏi lẫn nhau.`);
+    this.chronicle(B, `🕊️ ${B.name} và ${A.name} ký hòa ước hữu nghị.`, false);
+    this.toasts.push({ icon: '🕊️', title: 'Hòa ước hữu nghị', text: `${A.name} 🤝 ${B.name}` });
   }
 
   private villageNear(x: number, y: number, r: number) {
@@ -768,11 +878,12 @@ export class Sim {
       case 'war':
         this.warBetween(c.a, c.b);
         break;
-      case 'peace': {
-        const v = this.villages[c.v]?.capital;
-        if (v) for (const e of [...v.enemies]) this.makePeace(v, this.villages[e], `${this.godNames[c.god]} giáng xuống ý chỉ hòa bình`);
+      case 'peace':
+        if (c.b === undefined) {
+          const v = this.villages[c.a]?.capital;
+          if (v) for (const e of [...v.enemies]) this.makePeace(v, this.villages[e], `${this.godNames[c.god]} giáng xuống ý chỉ hòa bình`);
+        } else this.peaceBetween(c.a, c.b, c.god);
         break;
-      }
       case 'wish':
         this.answerWish(c.id, c.yes, c.god);
         break;
@@ -1255,8 +1366,11 @@ export class Sim {
   private wishTick(v: Village, dt: number) {
     v.wishCooldown -= dt;
     if (v.wishCooldown > 0 || this.wishes.some((x) => x.village === v.id)) return;
-    v.wishCooldown = 50 + (100 - v.faith) * 0.8 + rand() * 40;
+    v.wishCooldown = 240 + (100 - v.faith) * 2 + rand() * 160;
     if (v.faith < 5) return;
+    // Across the whole world: at most 3 waiting, and a pause between any two prayers.
+    if (this.wishes.length >= 3 || this.world.time < this.nextWishAt) return;
+    this.nextWishAt = this.world.time + 120 + rand() * 90;
     const wish = this.composeWish(v);
     if (!wish) return;
     this.wishes.push(wish);
@@ -1278,7 +1392,7 @@ export class Sim {
       text,
       reason,
       target,
-      expires: w.time + 75,
+      expires: w.time + 150,
     });
 
     if (v.enemies.size) {
@@ -1446,6 +1560,7 @@ export class Sim {
     city.opinion.clear();
     city.partners.clear();
     city.allies.clear();
+    city.pacts.clear();
   }
 
   /** The seat of a nation moves to another of its cities (keeps its name, wars, friends). */
@@ -1456,14 +1571,16 @@ export class Sim {
     seat.opinion = old.opinion;
     seat.partners = old.partners;
     seat.allies = old.allies;
+    seat.pacts = old.pacts;
     seat.hue = old.hue;
     seat.annexed = old.annexed;
     seat.tech = Math.max(seat.tech, old.tech);
     old.opinion = new Map();
     old.partners = new Set();
     old.allies = new Set();
+    old.pacts = new Set();
     for (const o of this.villages) {
-      for (const set of [o.warSet, o.partners, o.allies]) if (set.delete(old.id)) set.add(seat.id);
+      for (const set of [o.warSet, o.partners, o.allies, o.pacts]) if (set.delete(old.id)) set.add(seat.id);
       const op = o.opinion.get(old.id);
       if (op !== undefined) {
         o.opinion.delete(old.id);
@@ -1487,7 +1604,9 @@ export class Sim {
         const [d, ca, cb] = this.nearestCities(a, b);
         const atWar = a.enemies.has(b.id);
         // Trade between nations at peace whose markets are within reach.
-        const trading = !atWar && d < 120 && this.nationHas(a, 'market') && this.nationHas(b, 'market');
+        const pact = a.pacts.has(b.id);
+        // Treaty partners trade over any distance, markets or not.
+        const trading = !atWar && (pact || (d < 120 && this.nationHas(a, 'market') && this.nationHas(b, 'market')));
         if (trading && !a.partners.has(b.id)) {
           a.partners.add(b.id);
           b.partners.add(a.id);
@@ -1512,6 +1631,24 @@ export class Sim {
           if (ca.culture.id !== cb.culture.id) {
             this.influence(ca, cb);
             this.influence(cb, ca);
+            if (pact) {
+              this.influence(ca, cb);
+              this.influence(cb, ca);
+            }
+          }
+          if (pact) {
+            // Friends in peace grow rich together and share what they know.
+            const pa = this.nationPop(a);
+            const pb = this.nationPop(b);
+            a.food += 2 + pa * 0.03;
+            b.food += 2 + pb * 0.03;
+            a.wood += 1 + pa * 0.02;
+            b.wood += 1 + pb * 0.02;
+            const gap = a.tech - b.tech;
+            if (gap > 0) b.tech += gap * 0.004;
+            else a.tech -= gap * 0.004;
+            a.opinion.set(b.id, Math.min(100, (a.opinion.get(b.id) ?? 0) + 1.5));
+            b.opinion.set(a.id, Math.min(100, (b.opinion.get(a.id) ?? 0) + 1.5));
           }
         }
         // Friendship becomes alliance; alliances fray when opinion sours.
@@ -1552,12 +1689,13 @@ export class Sim {
         if (a.patron !== b.patron) delta -= a.patron >= 0 && b.patron >= 0 ? 1.6 : 0.8; // holy wars between two gods' faithful
         if (a.culture.id === b.culture.id) delta += 0.7;
         if (a.allies.has(b.id)) delta += 1.2;
+        if (a.pacts.has(b.id)) delta += 2.5;
         if (!border) delta += 0.6;
         if (delta < 0) delta *= a.culture.traits.aggression;
         delta += rand() - 0.5;
         const op = Math.max(-100, Math.min(100, (a.opinion.get(b.id) ?? 0) + delta));
         a.opinion.set(b.id, op);
-        if (op < -60 && border && !a.enemies.has(b.id) && !a.allies.has(b.id) && a.enemies.size === 0 && popA >= 8 && this.nationPop(b) >= 3) {
+        if (op < -60 && border && !a.enemies.has(b.id) && !a.allies.has(b.id) && !a.pacts.has(b.id) && a.enemies.size === 0 && popA >= 8 && this.nationPop(b) >= 3) {
           const why =
             a.patron >= 0 && b.patron >= 0 && a.patron !== b.patron
               ? `nhân danh ${this.godNames[a.patron]} — một cuộc thánh chiến`
@@ -1570,11 +1708,11 @@ export class Sim {
           // Allies honour their treaties.
           for (const al of b.allies) {
             const ally = this.villages[al];
-            if (ally?.alive && ally.isCapital && ally !== a && !ally.enemies.has(a.id) && rand() < 0.6) this.declareWar(ally, a, `để bảo vệ đồng minh ${b.name}`);
+            if (ally?.alive && ally.isCapital && ally !== a && !ally.enemies.has(a.id) && !ally.pacts.has(a.id) && rand() < 0.6) this.declareWar(ally, a, `để bảo vệ đồng minh ${b.name}`);
           }
           for (const al of a.allies) {
             const ally = this.villages[al];
-            if (ally?.alive && ally.isCapital && ally !== b && !ally.enemies.has(b.id) && rand() < 0.4) this.declareWar(ally, b, `sát cánh cùng đồng minh ${a.name}`);
+            if (ally?.alive && ally.isCapital && ally !== b && !ally.enemies.has(b.id) && !ally.pacts.has(b.id) && rand() < 0.4) this.declareWar(ally, b, `sát cánh cùng đồng minh ${a.name}`);
           }
         }
       }
@@ -1609,6 +1747,7 @@ export class Sim {
       const pa = this.nationPop(A);
       const pb = this.nationPop(B);
       const [weak, strong, pw, ps] = pa < pb ? [A, B, pa, pb] : [B, A, pb, pa];
+      if ((war.minEnd ?? 0) > this.world.time) continue;
       if (pw <= Math.max(5, ps * 0.25) && ps >= 10) this.annex(strong, weak);
       else if (this.world.time - war.start > 160 && rand() < 0.06) this.makePeace(A, B, 'hai bên kiệt sức và ký hòa ước');
     }
@@ -1680,6 +1819,7 @@ export class Sim {
     for (const o of this.villages) {
       o.allies.delete(loser.id);
       o.partners.delete(loser.id);
+      o.pacts.delete(loser.id);
     }
     const joined = new Set(this.villages.filter((c) => c.nation === loser.id).map((c) => c.id));
     for (const c of this.villages) if (joined.has(c.id)) c.nation = winner.id;
@@ -1690,6 +1830,7 @@ export class Sim {
     loser.opinion.clear();
     loser.partners.clear();
     loser.allies.clear();
+    loser.pacts.clear();
     for (const [c, k] of loser.influences) winner.influences.set(c, Math.max(winner.influences.get(c) ?? 0, k));
     if (winner.culture.id !== loser.culture.id) winner.influences.set(loser.culture.id, Math.max(40, winner.influences.get(loser.culture.id) ?? 0));
     const cities = this.citiesOf(winner).length;
@@ -2966,6 +3107,7 @@ export class Sim {
         villages: this.villages,
         wars: this.wars,
         wishes: this.wishes,
+        nextWishAt: this.nextWishAt,
         log: this.log,
         milestones: this.milestones,
         achieved: this.achieved,
@@ -2988,9 +3130,8 @@ export class Sim {
         weather: w.weather,
         autoWeather: w.autoWeather,
         weatherTimer: w.weatherTimer,
-        regionWeather: w.regionWeather,
         regionTemp: [...w.regionTemp],
-        regionTimer: [...w.regionTimer],
+        systems: w.systems,
         time: w.time,
         dayLength: w.dayLength,
         phase: w.phase,
@@ -3023,10 +3164,12 @@ export class Sim {
     for (const [k, arr] of Object.entries(data.arrays as Record<string, ArrayLike<number>>)) {
       (w as unknown as Record<string, { set(a: ArrayLike<number>): void }>)[k].set(arr);
     }
-    const { regionTemp, regionTimer, ...rest } = data.world;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { regionTemp, regionTimer, regionWeather, systems, ...rest } = data.world;
     Object.assign(w, rest);
     if (regionTemp) w.regionTemp.set(regionTemp);
-    if (regionTimer) w.regionTimer.set(regionTimer);
+    w.systems = (systems ?? []).map((o: object) => ({ ...o }));
+    w.rebuildWeather();
     w.events.length = 0;
     const d = data.sim;
     this.godNames = d.godNames ?? [d.godName ?? 'Đấng Sáng Thế', 'Đấng Hắc Nguyệt'];
@@ -3048,7 +3191,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });
@@ -3069,6 +3212,7 @@ export class Sim {
     this.animals.resume(Math.max(0, ...this.animals.list.map((a) => a.id)) + 1);
     this.wars = d.wars;
     this.wishes = d.wishes;
+    this.nextWishAt = d.nextWishAt ?? 0;
     this.log = d.log;
     this.milestones = d.milestones;
     this.achieved = d.achieved;
@@ -3096,6 +3240,7 @@ export class Sim {
     this.selectedHuman = null;
     this.selectedVillage = null;
     this.warFrom = null;
+    this.peaceFrom = null;
     this.generation++; // the renderer redraws everything
   }
 

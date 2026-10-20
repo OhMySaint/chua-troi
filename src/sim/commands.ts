@@ -16,7 +16,7 @@ export type Command = { god: number } & (
   | { t: 'human'; x: number; y: number }
   | { t: 'animal'; kind: 'deer' | 'wolf'; x: number; y: number }
   | { t: 'war'; a: number; b: number }
-  | { t: 'peace'; v: number }
+  | { t: 'peace'; a: number; b?: number }
   | { t: 'wish'; id: number; yes: boolean }
   | { t: 'godName'; name: string }
 );

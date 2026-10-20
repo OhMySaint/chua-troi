@@ -68,6 +68,8 @@ export class World {
   building = new Uint8Array(N);
   /** Road surface (Road.*). */
   road = new Uint8Array(N);
+  /** 1 where the road is a bridge deliberately built over water. */
+  bridge = new Uint8Array(N);
   /** Permanent climate offset per cell from latitude (poles are colder). */
   latChill = new Float32Array(N);
 
@@ -109,6 +111,7 @@ export class World {
     this.owner.fill(-1);
     this.building.fill(0);
     this.road.fill(0);
+    this.bridge.fill(0);
     this.events.length = 0;
     this.vents.length = 0;
     this.phase = 0;
@@ -588,6 +591,8 @@ export class World {
           this.destroy(i, 'flood');
           this.cover[i] = Cover.NONE;
         }
+        // A street the sea swallowed is gone; only real bridges stand over water.
+        if (this.road[i] && !this.bridge[i]) this.road[i] = 0;
         // Shallow water freezes first; open ocean only in deep cold.
         if (temp < -2 && (h > sea - 0.06 || temp < -14)) this.snow[i] = Math.min(1, this.snow[i] + 0.06 * (h > sea - 0.06 ? 1 : 0.3));
         else if (temp > 0) this.snow[i] = Math.max(0, this.snow[i] - 0.12);

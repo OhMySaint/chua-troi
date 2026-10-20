@@ -67,4 +67,6 @@ export interface Fleet {
   /** Target city id. */
   target: number;
   carrier: boolean;
+  /** Soldiers carried by an invasion convoy (they land when it arrives). */
+  troops?: number;
 }

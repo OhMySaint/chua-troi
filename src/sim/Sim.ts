@@ -264,6 +264,9 @@ export class Village {
   armyY = 0;
   armyTarget = -1;
   armyT = 0;
+  /** The army's planned land route: waypoints x0, y0, x1, y1… (cells), for target armyPathFor. */
+  armyPath: number[] = [];
+  armyPathFor = -1;
   slots = 0;
   airCd = 30;
   navyCd = 40;
@@ -447,6 +450,11 @@ interface War {
   start: number;
   /** No conquest or treaty before this time (for wars the gods start). */
   minEnd?: number;
+  /** Each side's people when the war began, to judge exhaustion. */
+  popA0?: number;
+  popB0?: number;
+  /** When either side last took a city: fresh gains keep a war going. */
+  lastGain?: number;
 }
 
 /** Banner colours chosen to be told apart at a glance on the map. */
@@ -1286,6 +1294,7 @@ export class Sim {
           this.chronicle(a, `🏴 Quân ${a.name} đánh bại quân giữ thành, chiếm được ${v.base}! ${v.base} giờ thuộc về ${a.name}.`);
           this.chronicle(from, `🏳️ ${v.base} thất thủ, rơi vào tay ${a.name}.`, false);
           this.toasts.push({ icon: '🏴', title: 'Thành thất thủ!', text: `${v.base} → ${a.name}` });
+          for (const wr of this.wars) if ((wr.a === a.id && wr.b === from.id) || (wr.b === a.id && wr.a === from.id)) wr.lastGain = this.world.time;
           this.transferCity(v, a);
           this.stats.annexations++;
           // Some of the victors stay on as the new townsfolk; more follow from home.
@@ -2365,8 +2374,43 @@ export class Sim {
       const pb = this.nationPop(B);
       const [weak, strong, pw, ps] = pa < pb ? [A, B, pa, pb] : [B, A, pb, pa];
       if ((war.minEnd ?? 0) > this.world.time) continue;
-      if (pw <= Math.max(5, ps * 0.25) && ps >= 10) this.annex(strong, weak);
-      else if (this.world.time - war.start > 160 && rand() < 0.06) this.makePeace(A, B, 'hai bên kiệt sức và ký hòa ước');
+      // A weak nation surrenders only once the war has truly broken it (half its people gone).
+      const pw0 = weak === A ? (war.popA0 ?? pw) : (war.popB0 ?? pw);
+      // …and only to an army actually standing on its soil.
+      const boots = () =>
+        this.citiesOf(weak).some((c) => {
+          let n = 0;
+          this.humanGrid.each(c.cx, c.cy, c.radius + 10, (o) => {
+            if (o.role === 'soldier' && o.village >= 0 && this.villages[o.village]?.nation === strong.id) n++;
+          });
+          return n >= 3;
+        });
+      if (pw <= Math.max(5, ps * 0.25) && ps >= 10 && pw <= pw0 * 0.5 && boots()) {
+        this.annex(strong, weak);
+        continue;
+      }
+      // Wars are fought out: great powers fight longer, and nobody sues for peace while the guns
+      // are winning. Peace comes when a side is bled white — or after a long, hopeless stalemate.
+      const age = this.world.time - war.start;
+      const minAge = 200 + 25 * Math.sqrt(pa + pb);
+      const tiredA = pa < (war.popA0 ?? pa) * 0.7 || A.econT > 0;
+      const tiredB = pb < (war.popB0 ?? pb) * 0.7 || B.econT > 0;
+      const fighting = A.armyPhase === 'siege' || B.armyPhase === 'siege' || this.world.time - (war.lastGain ?? -1e9) < 90;
+      const stalemate = age > minAge * 3;
+      if (age > minAge && !fighting && (tiredA || tiredB || stalemate) && rand() < 0.05) {
+        // The beaten side pays: it cedes the city nearest the front.
+        const loser = tiredA && !tiredB ? A : tiredB && !tiredA ? B : null;
+        const winner = loser === A ? B : A;
+        let ceded = '';
+        if (loser && this.citiesOf(loser).length > 1) {
+          const [, , city] = this.nearestCities(winner, loser);
+          if (!city.isCapital) {
+            ceded = city.base;
+            this.transferCity(city, winner);
+          }
+        }
+        this.makePeace(A, B, loser ? `${loser.name} kiệt quệ, phải cầu hòa${ceded ? ` và cắt ${ceded} cho ${winner.name}` : ''}` : 'sau nhiều năm giằng co bất phân thắng bại, hai bên ký hòa ước');
+      }
     }
   }
 
@@ -2387,7 +2431,7 @@ export class Sim {
     b.enemies.add(a.id);
     a.opinion.set(b.id, -80);
     b.opinion.set(a.id, -80);
-    this.wars.push({ a: a.id, b: b.id, start: this.world.time });
+    this.wars.push({ a: a.id, b: b.id, start: this.world.time, popA0: this.nationPop(a), popB0: this.nationPop(b) });
     this.stats.wars++;
     const text = `⚔️ ${a.ruler || a.name} của ${a.name} tuyên chiến với ${b.name} ${why}!`;
     this.chronicle(a, text);
@@ -2894,7 +2938,7 @@ export class Sim {
       let near = 0;
       const towns = new Set<number>();
       for (const h of this.humans) {
-        if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village].nation !== cap.id || this.isGarrison(h, cap)) continue;
+        if (h.role !== 'soldier' || h.village < 0 || this.villages[h.village].nation !== cap.id || h.voyageUntil > this.world.time || this.isGarrison(h, cap)) continue;
         total++;
         if (Math.hypot(h.x - cap.armyX, h.y - cap.armyY) < 10) {
           near++;
@@ -2910,14 +2954,28 @@ export class Sim {
         cap.armyPhase = 'march';
         this.chronicle(cap, `🚩 ${near} binh sĩ từ ${towns.size} thành của ${cap.name} tập hợp xong, lên đường tiến đánh ${target.name}${guards ? ` (quân giữ thành: ${guards})` : ''}.`, false);
       }
-    } else if (cap.armyPhase === 'march' && this.seaBetween(cap.armyX, cap.armyY, target.cx, target.cy)) {
-      // The sea stands between the army and its goal: it waits on the shore while the fleet sails.
+    } else if (cap.armyPhase === 'march' && cap.armyPathFor !== target.id) {
+      // Plan the march: a road on land if there is one, else the army must go by sea.
+      const route = this.landRoute(cap.armyX, cap.armyY, target.cx, target.cy);
+      cap.armyPath = route ?? [];
+      cap.armyPathFor = route ? target.id : -2 - target.id;
+    } else if (cap.armyPhase === 'march' && cap.armyPathFor === -2 - target.id) {
+      // The sea stands between the army and its goal: the whole field army boards a convoy and
+      // lands on the far shore; until the ships are ready the warships keep up the pressure.
       cap.navyCd = Math.min(cap.navyCd, 3);
+      if (cap.era >= 1 && cap.navyCd <= 3) {
+        this.invade(cap, target);
+        cap.armyPathFor = -1; // replan from the beachhead
+      }
     } else if (cap.armyPhase === 'march') {
-      // The banner advances at a steady pace the whole column can follow.
-      const step = Math.min(d, 1.4 * dt);
-      cap.armyX += ((target.cx - cap.armyX) / (d || 1)) * step;
-      cap.armyY += ((target.cy - cap.armyY) / (d || 1)) * step;
+      // The banner advances along the planned route at a pace the whole column can follow.
+      const tx = cap.armyPath.length ? cap.armyPath[0] : target.cx;
+      const ty = cap.armyPath.length ? cap.armyPath[1] : target.cy;
+      const dw = Math.hypot(tx - cap.armyX, ty - cap.armyY);
+      const step = Math.min(dw, 1.4 * dt);
+      cap.armyX += ((tx - cap.armyX) / (dw || 1)) * step;
+      cap.armyY += ((ty - cap.armyY) / (dw || 1)) * step;
+      if (cap.armyPath.length && dw < 1.5) cap.armyPath.splice(0, 2);
       if (d < 5) cap.armyPhase = 'siege';
     }
 
@@ -2940,7 +2998,11 @@ export class Sim {
           this.sfx.push('war');
         } else {
           const end = now + 3 + dist / (cap.era === 4 ? 18 : 30);
-          this.airstrikes.push({ id, x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: now, end, nuke, from: from.id, color: cap.color, era: cap.era });
+          // Modern powers strike far targets with cruise missiles as well as bombers.
+          const cruise = cap.era >= 5 && (dist > 120 || rand() < 0.35);
+          if (cruise) {
+            this.airstrikes.push({ id, x1: from.cx, y1: from.cy, x2: target.cx + (rand() - 0.5) * 6, y2: target.cy + (rand() - 0.5) * 6, start: now, end: now + 3 + dist / 70, nuke: false, from: from.id, color: cap.color, era: cap.era, missile: true });
+          } else this.airstrikes.push({ id, x1: from.cx, y1: from.cy, x2: target.cx, y2: target.cy, start: now, end, nuke, from: from.id, color: cap.color, era: cap.era });
           // A modern defender with an airfield scrambles fighters to meet the bombers halfway.
           const def = target.capital;
           if (def.era >= 5 && this.nationHas(def, 'airport') && rand() < 0.55) {
@@ -2962,6 +3024,99 @@ export class Sim {
         this.launchFleet(cap, target);
       }
     }
+  }
+
+  /**
+   * A land route between two points, found on a coarse grid of 4×4-cell blocks (bridges and ice
+   * count as land). Returns waypoints [x, y, x, y…] in cells, or null if only the sea leads there.
+   */
+  landRoute(x1: number, y1: number, x2: number, y2: number): number[] | null {
+    const w = this.world;
+    const B = 4;
+    const BW = Math.ceil(W / B);
+    const BH = Math.ceil(H / B);
+    const walk = (bx: number, by: number) => {
+      for (const [ox, oy] of [[2, 2], [0, 0], [3, 0], [0, 3], [3, 3]]) {
+        const x = bx * B + ox;
+        const y = by * B + oy;
+        if (x < W && y < H && w.canWalk(idx(x, y))) return true;
+      }
+      return false;
+    };
+    const start = Math.floor(clampY(y1) / B) * BW + Math.floor(clampX(x1) / B);
+    const goal = Math.floor(clampY(y2) / B) * BW + Math.floor(clampX(x2) / B);
+    const prev = new Int32Array(BW * BH).fill(-1);
+    prev[start] = start;
+    const queue = new Int32Array(BW * BH);
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    let found = false;
+    while (head < tail) {
+      const b = queue[head++];
+      if (b === goal) {
+        found = true;
+        break;
+      }
+      const bx = b % BW;
+      const by = (b / BW) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = bx + dx;
+          const ny = by + dy;
+          if (nx < 0 || ny < 0 || nx >= BW || ny >= BH) continue;
+          const n = ny * BW + nx;
+          if (prev[n] >= 0 || (n !== goal && !walk(nx, ny))) continue;
+          prev[n] = b;
+          queue[tail++] = n;
+        }
+      }
+    }
+    if (!found) return null;
+    const blocks: number[] = [];
+    for (let b = goal; b !== start; b = prev[b]) blocks.push(b);
+    blocks.reverse();
+    const out: number[] = [];
+    for (let k = 2; k < blocks.length; k += 3) out.push((blocks[k] % BW) * B + 2, ((blocks[k] / BW) | 0) * B + 2);
+    out.push(x2, y2);
+    return out;
+  }
+
+  /** Embark the field army at the muster and land it on the coast nearest the target. */
+  private invade(cap: Village, target: Village) {
+    const w = this.world;
+    const sea = (j: number) => w.isWater(j) && !w.isIce(j);
+    const port = w.findNearest(cap.armyX, cap.armyY, 25, sea);
+    const dest = w.findNearest(target.cx, target.cy, target.radius + 14, sea);
+    if (port < 0 || dest < 0) return;
+    const beach = w.findNearest(cx(dest), cy(dest), 8, (j) => w.canWalk(j) && !w.isWater(j));
+    if (beach < 0) return;
+    const troops = this.humans.filter(
+      (h) => !h.dead && h.role === 'soldier' && h.voyageUntil <= w.time && h.village >= 0 && this.villages[h.village]?.nation === cap.id && h.id % 4 !== 0 && Math.hypot(h.x - cap.armyX, h.y - cap.armyY) < 14,
+    );
+    if (troops.length < 4) return;
+    const dist = Math.hypot(cx(port) - cx(dest), cy(port) - cy(dest));
+    const speed = cap.era <= 2 ? 6 : cap.era <= 3 ? 8 : 12;
+    const end = w.time + 4 + dist / speed;
+    const n = Math.min(60, troops.length);
+    for (let k = 0; k < n; k++) {
+      const h = troops[k];
+      h.x = cx(beach) + 0.5 + (rand() - 0.5) * 4;
+      h.y = cy(beach) + 0.5 + (rand() - 0.5) * 4;
+      h.voyageUntil = end;
+      h.hasTarget = false;
+    }
+    const carrier = cap.era >= 5;
+    this.fleets.push({ x1: cx(port) + 0.5, y1: cy(port) + 0.5, x2: cx(dest) + 0.5, y2: cy(dest) + 0.5, start: w.time, end, era: cap.era, color: cap.color, from: cap.id, target: target.id, carrier, troops: n });
+    // The army's banner goes ashore with them.
+    cap.armyX = cx(beach) + 0.5;
+    cap.armyY = cy(beach) + 0.5;
+    cap.armyPhase = 'rally';
+    cap.armyT = 0;
+    const ships = cap.era <= 2 ? 'thuyền chiến' : cap.era === 3 ? 'chiến thuyền' : cap.era === 4 ? 'tàu vận tải' : 'tàu đổ bộ và tàu sân bay';
+    this.chronicle(cap, `⛵ ${n} binh sĩ ${cap.name} lên ${ships} vượt biển, đổ bộ đánh ${target.name}!`);
+    this.toasts.push({ icon: '⛵', title: 'Đổ bộ!', text: `${cap.name} → ${target.base} (${n} quân)` });
   }
 
   /** Sends a war fleet from our nearest port toward the coast by the target. */
@@ -3043,7 +3198,7 @@ export class Sim {
         continue;
       }
       if (a.nuke) this.nukeAt(a);
-      else this.bombAt(a.x2 + rand() * 4 - 2, a.y2 + rand() * 4 - 2, 3, a.from);
+      else this.bombAt(a.x2 + rand() * 4 - 2, a.y2 + rand() * 4 - 2, a.missile ? 4 : 3, a.from);
     }
   }
 
@@ -3638,27 +3793,33 @@ export class Sim {
       if (Math.abs(x - v.cx) <= 1 && Math.abs(y - v.cy) <= 1) break;
       path.push(idx(x, y));
     }
-    this.pave(path, tier, v.era);
+    this.pave(path, tier, v.era, false);
   }
 
   /** A highway between two trading partners' squares. */
   private carveHighway(a: Village, b: Village) {
     const n = Math.max(Math.abs(b.cx - a.cx), Math.abs(b.cy - a.cy));
     const path: number[] = [];
-    let last = -1;
+    let lx = -1;
+    let ly = -1;
     for (let k = 0; k <= n; k++) {
-      const i = idx(Math.round(a.cx + ((b.cx - a.cx) * k) / n), Math.round(a.cy + ((b.cy - a.cy) * k) / n));
-      if (i !== last) path.push(i);
-      last = i;
+      const x = Math.round(a.cx + ((b.cx - a.cx) * k) / n);
+      const y = Math.round(a.cy + ((b.cy - a.cy) * k) / n);
+      if (x === lx && y === ly) continue;
+      // A diagonal step gets a connecting cell, so roads and bridges are joined edge to edge.
+      if (lx >= 0 && x !== lx && y !== ly) path.push(idx(x, ly));
+      path.push(idx(x, y));
+      lx = x;
+      ly = y;
     }
-    this.pave(path, roadTier(Math.min(a.era, b.era)), Math.min(a.era, b.era));
+    this.pave(path, roadTier(Math.min(a.era, b.era)), Math.min(a.era, b.era), true);
   }
 
   /**
    * Pave a path: open ground becomes road; from the iron age a narrow stretch of water (a river,
    * a strait of up to 5 cells) gets a bridge. Farms, forest and buildings are stepped around.
    */
-  private pave(path: number[], tier: number, era: number) {
+  private pave(path: number[], tier: number, era: number, highway: boolean) {
     const w = this.world;
     for (let k = 0; k < path.length; k++) {
       const i = path[k];
@@ -3666,15 +3827,41 @@ export class Sim {
         let end = k;
         while (end < path.length && w.isWater(path[end])) end++;
         const span = end - k;
-        // Engineering reaches further each age: river bridges, then viaducts, then sea bridges.
-        const maxSpan = [0, 0, 5, 8, 24, 45, 80][Math.min(6, era)];
-        if (span <= maxSpan && end < path.length) for (let j = k; j < end; j++) if (w.road[path[j]] < tier) w.road[path[j]] = tier;
+        // Engineering reaches further each age: river bridges, then viaducts, then sea bridges —
+        // but only highways get long bridges, and never one beside another.
+        const maxSpan = highway ? [0, 0, 5, 8, 24, 45, 80][Math.min(6, era)] : era >= 2 ? 3 : 0;
+        if (span <= maxSpan && end < path.length && !path.slice(k, end).some((c) => w.road[c])) {
+          const mid = path[(k + end) >> 1];
+          const near = span > 3 && this.bridgeNear(cx(mid), cy(mid), Math.max(8, span * 0.4), path);
+          if (!near) {
+            for (let j = k; j < end; j++) {
+              if (w.road[path[j]] < tier) w.road[path[j]] = tier;
+              w.bridge[path[j]] = 1;
+            }
+          }
+        }
         k = end - 1;
         continue;
       }
       if (w.cover[i] !== Cover.NONE) continue;
       if (w.road[i] < tier) w.road[i] = tier;
     }
+  }
+
+  /** Is there already a bridge within r cells of (x, y), other than on this path? */
+  private bridgeNear(x: number, y: number, r: number, path: number[]) {
+    const w = this.world;
+    const own = new Set(path);
+    for (let dy = -r; dy <= r; dy += 2) {
+      for (let dx = -r; dx <= r; dx += 2) {
+        const xx = Math.round(x + dx);
+        const yy = Math.round(y + dy);
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        const i = idx(xx, yy);
+        if (w.bridge[i] && !own.has(i)) return true;
+      }
+    }
+    return false;
   }
 
   private nearestHouse(h: Human, v: Village | null) {
@@ -4054,6 +4241,7 @@ export class Sim {
         regionClimate: w.regionClimate,
         building: w.building,
         road: w.road,
+        bridge: w.bridge,
       },
     };
   }
@@ -4091,7 +4279,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

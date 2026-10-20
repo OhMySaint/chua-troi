@@ -727,13 +727,14 @@ export class WorldScene extends Phaser.Scene {
       if (!this.inView(x, y, 60)) continue;
       const dir = Math.sign(f.x2 - f.x1) || 1;
       // Two or three ships sail together.
-      const n = f.carrier ? 1 : 3;
+      // An invasion convoy: transports with escorts; a carrier sails with its own screen.
+      const n = f.troops ? 3 + Math.min(4, Math.floor(f.troops / 10)) : f.carrier ? 1 : 3;
       for (let s2 = 0; s2 < n; s2++) {
         const ox = -dir * s2 * 22;
         const oy = (s2 % 2 ? 1 : -1) * s2 * 9;
         g.fillStyle(0xd8eef8, 0.5);
         g.fillRect(x + ox - dir * 18, y + oy + 2, 8, 1);
-        drawWarship(g, x + ox, y + oy, f.era, f.color, dir, f.carrier, t);
+        drawWarship(g, x + ox, y + oy, f.era, f.color, dir, f.carrier && s2 === 0, t);
       }
     }
 

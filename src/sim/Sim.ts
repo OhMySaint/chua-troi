@@ -1244,7 +1244,8 @@ export class Sim {
       // Only when the city cannot spread any further (or has grown very large) do settlers leave.
       const crowded = v.pop >= 30 && v.jobs.houseSites.length === 0;
       // From the bronze age on, settlers found new cities of their own nation: nations grow outward.
-      const tooBig = v.era >= 1 ? v.pop >= 90 + v.era * 15 : v.pop >= 70;
+      // Stone-age clans still split into new tribes; later cities simply keep growing.
+      const tooBig = v.era === 0 && v.pop >= 70;
       const room = this.villages.filter((o) => o.alive).length < 90;
       if (v.colonizeCd <= 0 && room && (crowded || tooBig) && v.enemies.size === 0) {
         v.colonizeCd = v.era >= 1 ? 90 + rand() * 80 : 160 + rand() * 120;
@@ -2493,20 +2494,11 @@ export class Sim {
   }
 
   /**
-   * A city spreads outward when it runs short of building land and its size justifies it, but never past
-   * the halfway line to a neighbouring city; it draws back if it shrinks.
+   * A city spreads outward, without limit, whenever it runs short of building land and its size
+   * justifies it; it draws back if it shrinks. Where two cities meet, the nearer one holds the land.
    */
   private spread(v: Village) {
-    const base = ERAS[v.era].radius;
-    let limit = 70;
-    for (const o of this.villages) {
-      if (!o.alive || o === v) continue;
-      const d = Math.hypot(o.cx - v.cx, o.cy - v.cy);
-      if (d > 200) continue;
-      limit = Math.min(limit, d * 0.5 - base);
-    }
-    const size = Math.sqrt(v.houses.size + v.buildings.size + v.farms.size * 0.5) * 2.2;
-    const target = Math.max(0, Math.min(limit, size));
+    const target = Math.sqrt(v.houses.size + v.buildings.size + v.farms.size * 0.5) * 2.2;
     const short = v.jobs.houseSites.length < 10 || v.jobs.farmSites.length < 6;
     if (v.reach < target && short) v.reach = Math.min(target, v.reach + 0.5);
     else if (v.reach > target) v.reach = Math.max(target, v.reach - 0.5);

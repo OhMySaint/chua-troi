@@ -46,10 +46,15 @@ export class BuildingLayer {
   }
   private smokeOf = new Map<string, [number, number][]>();
 
-  private place(id: string, key: string, draw: () => Art, x: number, y: number, color: number, seen: Set<string>) {
+  private place(id: string, key: string, draw: () => Art, x: number, y: number, color: number, seen: Set<string>): void {
     seen.add(id);
     const cur = this.sprites.get(id);
     if (cur && cur.key === key) {
+      // The city may have moved (fled a flood, the land rose under it).
+      if (cur.base.x !== x || cur.base.y !== y) {
+        this.destroy(id);
+        return this.place(id, key, draw, x, y, color, seen);
+      }
       if (cur.color !== color) {
         cur.accent.setTint(color);
         cur.color = color;

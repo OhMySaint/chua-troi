@@ -1103,6 +1103,8 @@ export class Sim {
         const safer = w.seaLevel + 0.05 + v.floods * 0.01;
         if (safer > v.minBuildHeight) v.minBuildHeight = safer;
         if (this.once(`flood${v.id}`, 40)) this.chronicle(v, `🌊 Nước lũ cuốn trôi nhà của ${v.name}! Từ đó họ chỉ dựng nhà trên chỗ đất cao.`);
+      } else if (e.type === 'slide') {
+        if (this.once(`slide${v.id}`, 30)) this.chronicle(v, `⛰️ Mặt đất nhô cao thành núi, nhà cửa ở ${v.name} đổ sập.`);
       } else if (e.type === 'quake') {
         if (this.once(`quake${v.id}`, 20)) this.chronicle(v, `🏚️ Động đất làm sập nhà ở ${v.name}.`);
       } else {
@@ -1190,12 +1192,17 @@ export class Sim {
         v.inWinter = false;
       }
 
-      if (w.isWater(center)) {
-        const dry = w.findNearest(v.cx, v.cy, 25, (j) => w.canWalk(j) && w.height[j] >= v.minBuildHeight);
+      // The heart of the city drowned, buried under a mountain or lava: the people move it.
+      const drowned = w.isWater(center);
+      const buried = !drowned && (w.height[center] >= HILL_MAX + 0.03 || w.cover[center] === Cover.LAVA || w.cover[center] === Cover.BASALT);
+      if (drowned || buried) {
+        const dry = w.findNearest(v.cx, v.cy, 30, (j) => w.canWalk(j) && !w.isWater(j) && w.height[j] >= v.minBuildHeight && w.height[j] < HILL_MAX && w.cover[j] !== Cover.LAVA && w.cover[j] !== Cover.BASALT);
         if (dry >= 0) {
           v.cx = cx(dry);
           v.cy = cy(dry);
-          this.chronicle(v, `🚶 ${v.name} bị ngập, cả làng dời lên chỗ đất cao.`);
+          v.jobTimer = 0;
+          if (this.once(`move${v.id}`, 30))
+            this.chronicle(v, drowned ? `🚶 ${v.name} bị ngập, cả làng dời lên chỗ đất cao.` : `🚶 Đất đai ở ${v.name} biến đổi dữ dội, người dân dời trung tâm thành sang chỗ bằng phẳng.`);
         }
       }
 
@@ -2267,6 +2274,46 @@ export class Sim {
   }
 
   /** A nation's army: rally at the city nearest the enemy, march as one block, besiege. */
+  /**
+   * Generals weigh every enemy city: how far it is from our own, how cut off it is from the rest of
+   * its nation, and how well defended. A lone outpost far from home is a tempting prize.
+   * Returns [distance, our staging city, target, chosen for being isolated].
+   */
+  private pickTarget(cap: Village): [number, Village, Village, boolean] | null {
+    const ours = this.citiesOf(cap);
+    if (!ours.length) return null;
+    let best: [number, Village, Village, boolean] | null = null;
+    let bestScore = Infinity;
+    let nearestD = Infinity;
+    for (const c of this.villages) {
+      if (!c.alive || !cap.enemies.has(c.nation)) continue;
+      let from = ours[0];
+      let d = Infinity;
+      for (const o of ours) {
+        const k = Math.hypot(o.cx - c.cx, o.cy - c.cy);
+        if (k < d) {
+          d = k;
+          from = o;
+        }
+      }
+      // How far is help? The distance to the nearest other city of its nation.
+      let help = 200;
+      for (const o of this.villages) if (o.alive && o !== c && o.nation === c.nation) help = Math.min(help, Math.hypot(o.cx - c.cx, o.cy - c.cy));
+      let guards = 0;
+      this.humanGrid.each(c.cx, c.cy, c.radius + 6, (h) => {
+        if (h.role === 'soldier' && h.village >= 0 && this.villages[h.village]?.nation === c.nation) guards++;
+      });
+      const score = d - Math.min(help, 200) * 0.7 + guards * 4 + c.pop * 0.3 - (c.isCapital ? 15 : 0);
+      nearestD = Math.min(nearestD, d);
+      if (score < bestScore) {
+        bestScore = score;
+        best = [d, from, c, false];
+      }
+    }
+    if (best && !best[2].isCapital && best[0] > nearestD + 10) best[3] = true;
+    return best;
+  }
+
   private armyTick(cap: Village, dt: number) {
     if (!cap.enemies.size) {
       cap.armyPhase = 'none';
@@ -2275,16 +2322,10 @@ export class Sim {
     }
     let target = this.villages[cap.armyTarget];
     if (!target?.alive || !cap.hostileTo(target.id)) {
-      // Nearest enemy city to any of our cities.
-      let best: [number, Village, Village] | null = null;
-      for (const e of cap.enemies) {
-        const en = this.villages[e];
-        if (!en?.alive) continue;
-        const r = this.nearestCities(cap, en);
-        if (!best || r[0] < best[0]) best = r;
-      }
+      const best = this.pickTarget(cap);
       if (!best) return;
       target = best[2];
+      if (best[3]) this.chronicle(cap, `🎯 Tướng lĩnh ${cap.name} nhận ra ${target.base} đứng trơ trọi, xa ${target.capital.name} — quyết đánh vào đó.`, false);
       cap.armyTarget = target.id;
       if (cap.armyPhase === 'none') {
         cap.armyPhase = 'rally';

@@ -18,7 +18,7 @@ import {
 import { fbm, rng } from './noise';
 
 export type WorldEvent =
-  | { type: 'flood' | 'burn' | 'quake'; i: number; owner: number; what: 'house' | 'farm' }
+  | { type: 'flood' | 'burn' | 'quake' | 'slide'; i: number; owner: number; what: 'house' | 'farm' }
   | { type: 'lightning'; x: number; y: number }
   | { type: 'impact'; x: number; y: number; r: number; kind: 'meteor' | 'quake' | 'volcano' };
 
@@ -511,7 +511,7 @@ export class World {
   }
 
   /** Remove a house/farm, telling its village why. */
-  private destroy(i: number, type: 'flood' | 'burn' | 'quake') {
+  private destroy(i: number, type: 'flood' | 'burn' | 'quake' | 'slide') {
     const c = this.cover[i];
     this.building[i] = 0;
     if ((c === Cover.HOUSE || c === Cover.FARM) && this.owner[i] >= 0) {
@@ -597,6 +597,12 @@ export class World {
       if (snowing || temp < -4) this.snow[i] = Math.min(1, this.snow[i] + 0.024 + rand() * 0.024);
       else if (temp > 1) this.snow[i] = Math.max(0, this.snow[i] - 0.016 * (temp / 10) - (raining ? 0.04 : 0));
 
+      // The land changed under it: homes slide off new mountainsides, fields on land too steep or barren fail.
+      if ((c === Cover.HOUSE && h >= HILL_MAX + 0.03) || (c === Cover.FARM && !this.isFertile(i))) {
+        this.destroy(i, 'slide');
+        this.cover[i] = Cover.NONE;
+        continue;
+      }
       switch (c) {
         case Cover.FIRE: {
           fires++;

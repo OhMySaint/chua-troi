@@ -1257,6 +1257,17 @@ export class Sim {
           this.toasts.push({ icon: '🏴', title: 'Thành thất thủ!', text: `${v.base} → ${a.name}` });
           this.transferCity(v, a);
           this.stats.annexations++;
+          // Some of the victors stay on as the new townsfolk; more follow from home.
+          let garrison = 0;
+          this.humanGrid.each(v.cx, v.cy, v.radius, (o) => {
+            if (garrison < 3 && o.role === 'soldier' && o.village >= 0 && this.villages[o.village]?.nation === a.id) {
+              o.village = v.id;
+              o.role = 'none';
+              garrison++;
+            }
+          });
+          const came = this.sendSettlers(v, a, Math.max(4, Math.min(12, v.houses.size)));
+          if (came) this.chronicle(a, `🧳 ${came} gia đình người ${a.name} dọn tới ${v.base} sinh sống.`, false);
         }
       }
 
@@ -1722,6 +1733,30 @@ export class Sim {
   }
 
   /**
+   * Settlers from the nation's most crowded other city move into `city` (a conquest, an empty town).
+   * Returns how many came.
+   */
+  private sendSettlers(city: Village, cap: Village, n: number) {
+    const donors = this.citiesOf(cap).filter((c) => c !== city && c.pop > 6).sort((a, b) => b.pop - a.pop);
+    let moved = 0;
+    for (const d of donors) {
+      const spare = Math.floor(d.pop * 0.25);
+      let k = 0;
+      for (const h of this.humans) {
+        if (moved >= n || k >= spare) break;
+        if (h.dead || h.village !== d.id || h.role !== 'none' || h.age < ADULT) continue;
+        h.village = city.id;
+        h.culture = h.culture || d.culture.id;
+        this.go(h, 'migrate', idx(city.cx, city.cy), `Dọn tới ${city.base} lập nghiệp`);
+        moved++;
+        k++;
+      }
+      if (moved >= n) break;
+    }
+    return moved;
+  }
+
+  /**
    * An empty town: a living city next to it (often the conqueror) moves in and takes it over;
    * otherwise its houses and fields crumble away.
    */
@@ -1735,29 +1770,33 @@ export class Sim {
     for (const o of this.villages) {
       if (!o.alive || o === v) continue;
       const d = Math.hypot(o.cx - v.cx, o.cy - v.cy);
-      if (d < o.radius + v.radius + 12 && d < bd) {
+      if (d < o.radius + v.radius + 45 && d < bd) {
         bd = d;
         heir = o;
       }
     }
     if (heir) {
-      for (const i of v.houses) {
-        heir.houses.add(i);
-        w.owner[i] = heir.id;
+      // The neighbour's nation resettles the empty town as one of its own cities.
+      const cap = heir.capital;
+      const came = this.sendSettlers(v, cap, Math.max(5, Math.min(14, v.houses.size)));
+      if (came >= 2) {
+        v.alive = true;
+        v.nation = cap.id;
+        v.warSet = new Set();
+        v.opinion = new Map();
+        v.partners = new Set();
+        v.allies = new Set();
+        v.pacts = new Set();
+        v.absorbedBy = -1;
+        v.era = cap.era;
+        v.tech = Math.max(v.tech, ERAS[cap.era].tech);
+        v.food = Math.max(v.food, 20);
+        v.wood = Math.max(v.wood, 10);
+        v.trauma = 0.3;
+        this.repaints.push({ x: v.cx, y: v.cy, r: v.radius + 8, color: cap.hue });
+        this.chronicle(cap, `🏘️ ${cap.name} đưa ${came} gia đình tới ở ${v.base} bỏ hoang — ${v.base} hồi sinh thành một thành phố của ${cap.name}.`);
+        return;
       }
-      for (const i of v.farms) {
-        heir.farms.add(i);
-        w.owner[i] = heir.id;
-      }
-      for (const [i, k] of v.buildings) heir.buildings.set(i, k);
-      v.houses.clear();
-      v.farms.clear();
-      v.buildings.clear();
-      v.absorbedBy = heir.id;
-      heir.reach += 4;
-      this.repaints.push({ x: v.cx, y: v.cy, r: v.radius + 8, color: heir.color });
-      this.chronicle(heir, `🏘️ ${heir.name} tiếp quản ${v.base} bỏ hoang, đưa dân tới ở.`);
-      return;
     }
     // Nobody to move in: a few homes and fields fall to ruin each time.
     const crumble = (set: Set<number>) => {

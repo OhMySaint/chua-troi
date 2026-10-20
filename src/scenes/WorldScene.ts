@@ -251,6 +251,7 @@ export class WorldScene extends Phaser.Scene {
     if (ui.attract) this.attractCamera(dt);
     if (ui.enter) {
       ui.enter = false;
+      this.tour.t = 0;
       const v = [...sim.villages].filter((o) => o.alive).sort((a, b) => b.pop - a.pop)[0];
       const h = sim.humans[0];
       cam.setZoom(3);
@@ -319,22 +320,14 @@ export class WorldScene extends Phaser.Scene {
   }
 
   /** Title screen: glide between nations and islands. */
-  private attractCamera(dt: number) {
+  /** Title screen: one still view over the islands (no motion — it was dizzying). */
+  private attractCamera(_dt: number) {
+    if (this.tour.t > 0 && this.tour.x === this.generation) return;
     const cam = this.cameras.main;
-    this.tour.t -= dt;
-    if (this.tour.t <= 0) {
-      this.tour.t = 12;
-      const alive = sim.villages.filter((v) => v.alive);
-      const v = alive[Math.floor(Math.random() * alive.length)];
-      const isl = sim.world.islands[Math.floor(Math.random() * sim.world.islands.length)];
-      const pick = v && Math.random() < 0.7 ? { x: v.cx, y: v.cy } : isl ? { x: isl.x, y: isl.y } : { x: W / 2, y: H / 2 };
-      this.tour.x = pick.x * CELL;
-      this.tour.y = pick.y * CELL;
-    }
-    const k = Math.min(1, dt * 0.25);
-    const mid = cam.midPoint;
-    cam.centerOn(mid.x + (this.tour.x - mid.x) * k * 0.4, mid.y + (this.tour.y - mid.y) * k * 0.4);
-    cam.setZoom(cam.zoom + (1.4 - cam.zoom) * k);
+    this.tour.t = 1;
+    this.tour.x = this.generation;
+    cam.setZoom(Math.max(this.minZoom, Math.min(cam.width / PW, cam.height / PH) * 1.25));
+    cam.centerOn(PW / 2, PH / 2);
   }
 
   /** What the camera sees → the soundscape; new events → sound effects. */

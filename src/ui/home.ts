@@ -63,24 +63,16 @@ export function mountHome() {
     render();
   });
 
-  home.addEventListener('input', (e) => {
-    const t = e.target as HTMLInputElement;
-    const k = t.dataset.set as keyof typeof settings | undefined;
-    if (!k) return;
-    if (t.type === 'checkbox') (settings[k] as boolean) = t.checked;
-    else (settings[k] as number) = Number(t.value);
-    saveSettings();
-    audio.applyVolumes();
-    if (k === 'sfx') audio.click();
-  });
+  home.addEventListener('input', onSetting);
   home.addEventListener('mouseover', (e) => {
     if ((e.target as HTMLElement).closest('.menu button')) audio.hover();
   });
 
   onProfile(() => render());
 
-  // ☰ in the toolbar brings the title screen back.
-  document.querySelector('#menu-btn')?.addEventListener('click', () => showHome());
+  // ☰ in the toolbar opens the pause menu (settings / quit to title).
+  mountPause();
+  document.querySelector('#menu-btn')?.addEventListener('click', () => openPause());
 
   // Invitation links skip the title screen and go straight to joining.
   if (new URLSearchParams(location.search).get('room')) enterGame();
@@ -89,10 +81,8 @@ export function mountHome() {
 export function showHome() {
   view = 'main';
   ui.attract = true;
-  if (!session?.together) {
-    sim.paused = false;
-    sim.speed = 2;
-  }
+  // A still backdrop: the world holds its breath behind the menu.
+  if (!session?.together) sim.paused = true;
   document.body.classList.add('at-home');
   home.hidden = false;
   render();
@@ -107,6 +97,92 @@ function enterGame() {
     sim.paused = false;
   }
   ui.enter = true;
+}
+
+function settingsHTML(backAction: string) {
+  const slider = (k: keyof typeof settings, label: string) =>
+    `<label class="set"><span>${label}</span><input type="range" min="0" max="1" step="0.05" data-set="${k}" value="${settings[k]}"></label>`;
+  const check = (k: keyof typeof settings, label: string) =>
+    `<label class="set check"><input type="checkbox" data-set="${k}" ${settings[k] ? 'checked' : ''}><span>${label}</span></label>`;
+  return `<div class="menu settings">
+    <h3>⚙ Cài đặt</h3>
+    ${slider('master', '🔊 Âm lượng chung')}
+    ${slider('music', '🎵 Nhạc nền')}
+    ${slider('sfx', '💥 Hiệu ứng')}
+    ${slider('ambience', '🌧 Âm thanh môi trường')}
+    ${check('muted', 'Tắt tiếng (phím M)')}
+    ${check('particles', 'Hiện mưa, tuyết rơi')}
+    ${check('labels', 'Hiện tên quốc gia trên bản đồ')}
+    <label class="set"><span>⏩ Tốc độ khi bắt đầu</span><input type="range" min="1" max="8" step="1" data-set="speed" value="${settings.speed}"></label>
+    <button data-go="${backAction}">← Quay lại</button>
+  </div>`;
+}
+
+function onSetting(e: Event) {
+  const t = e.target as HTMLInputElement;
+  const k = t.dataset.set as keyof typeof settings | undefined;
+  if (!k) return;
+  if (t.type === 'checkbox') (settings[k] as boolean) = t.checked;
+  else (settings[k] as number) = Number(t.value);
+  saveSettings();
+  audio.applyVolumes();
+  if (k === 'sfx') audio.click();
+}
+
+// ---------- in-game pause menu ----------
+
+let pause: HTMLDivElement;
+let wasPaused = false;
+
+function mountPause() {
+  pause = document.createElement('div');
+  pause.id = 'pause';
+  pause.className = 'modal';
+  pause.hidden = true;
+  document.body.append(pause);
+  pause.addEventListener('input', onSetting);
+  pause.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    if (t === pause) return closePause();
+    const b = t.closest<HTMLElement>('[data-go]');
+    if (!b) return;
+    if (b.dataset.go === 'p-close') closePause();
+    else if (b.dataset.go === 'p-settings') renderPause('settings');
+    else if (b.dataset.go === 'p-back') renderPause('main');
+    else if (b.dataset.go === 'p-quit') {
+      pause.hidden = true;
+      showHome();
+    }
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !pause.hidden) closePause();
+  });
+}
+
+function openPause() {
+  wasPaused = sim.paused;
+  if (!session?.together) sim.paused = true; // a shared world keeps turning
+  pause.hidden = false;
+  renderPause('main');
+}
+
+function closePause() {
+  pause.hidden = true;
+  if (!session?.together) sim.paused = wasPaused;
+}
+
+function renderPause(v: 'main' | 'settings') {
+  pause.innerHTML = `<div class="pause-box">
+    <div class="dialog-head"><h3>☰ Tạm dừng</h3><button data-go="p-close" title="Tiếp tục chơi (Esc)">✕</button></div>
+    ${
+      v === 'main'
+        ? `<div class="menu">
+            <button data-go="p-settings">⚙ Cài đặt</button>
+            <button data-go="p-quit">⏻ Thoát ra màn hình chính</button>
+          </div>`
+        : settingsHTML('p-back')
+    }
+  </div>`;
 }
 
 async function render() {
@@ -136,22 +212,7 @@ async function render() {
       <button data-go="back">← Quay lại</button>
     </div>`;
   } else if (view === 'settings') {
-    const slider = (k: keyof typeof settings, label: string) =>
-      `<label class="set"><span>${label}</span><input type="range" min="0" max="1" step="0.05" data-set="${k}" value="${settings[k]}"></label>`;
-    const check = (k: keyof typeof settings, label: string) =>
-      `<label class="set check"><input type="checkbox" data-set="${k}" ${settings[k] ? 'checked' : ''}><span>${label}</span></label>`;
-    body = `<div class="menu settings">
-      <h3>⚙ Cài đặt</h3>
-      ${slider('master', '🔊 Âm lượng chung')}
-      ${slider('music', '🎵 Nhạc nền')}
-      ${slider('sfx', '💥 Hiệu ứng')}
-      ${slider('ambience', '🌧 Âm thanh môi trường')}
-      ${check('muted', 'Tắt tiếng (phím M)')}
-      ${check('particles', 'Hiện mưa, tuyết rơi')}
-      ${check('labels', 'Hiện tên quốc gia trên bản đồ')}
-      <label class="set"><span>⏩ Tốc độ khi bắt đầu</span><input type="range" min="1" max="8" step="1" data-set="speed" value="${settings.speed}"></label>
-      <button data-go="back">← Quay lại</button>
-    </div>`;
+    body = settingsHTML('back');
   } else {
     body = `<div class="menu"><p class="bye">Hẹn gặp lại, vị thần!<br><small>Bạn có thể đóng tab này.</small></p><button data-go="back">← Quay lại</button></div>`;
   }

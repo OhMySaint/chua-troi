@@ -26,7 +26,8 @@ function line(sim: Sim, h: Human): string {
   if (h.action === 'fight' || h.role === 'soldier') return pick([`Vì ${v?.capital.base ?? 'quê hương'}!`, 'Xông lên!', 'Giữ vững hàng ngũ!', 'Không lùi bước!']);
   if (h.action === 'flee' || h.action === 'swim') return pick(['Cứu với!', 'Chạy mau!', 'Trời ơi!']);
   if (h.action === 'pray' && v) return pick([`Lạy ${sim.deityOf(v)} phù hộ!`, 'Xin ban phước lành!', `Mừng ${v.culture.festival}!`]);
-  if (h.hunger > 0.65) return pick(['Đói quá...', 'Kho lúa sắp cạn rồi', 'Bao giờ mới được bữa no?']);
+  if (h.hunger > 0.65)
+    return era >= 4 ? pick(['Giá thực phẩm đắt quá', 'Siêu thị hết hàng rồi', 'Lương không đủ mua gạo']) : pick(['Đói quá...', 'Kho lúa sắp cạn rồi', 'Bao giờ mới được bữa no?']);
   if (h.warmth < 0.4) return pick(['Lạnh cóng cả người', 'Mùa đông này dài quá', 'Củi đâu hết rồi?']);
   if (v && v.trauma > 0.4) return pick(['Thiên tai tàn phá hết rồi...', 'Phải làm lại từ đầu thôi', 'Bao giờ mới yên ổn đây?']);
   if (v && v.enemies.size) return pick(['Chiến tranh bao giờ mới hết?', 'Con tôi đã ra trận...', 'Nghe nói giặc sắp tới']);

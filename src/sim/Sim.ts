@@ -1272,6 +1272,8 @@ export class Sim {
       }
 
       v.trauma = Math.max(0, v.trauma - dt * 0.004);
+      // Modern supply chains: a city short of food buys it in (or gets aid), unless besieged.
+      if (v.era >= 4 && v.siegeT === 0 && v.food < v.pop * 1.5) v.food += v.pop * 0.04 * dt * (v.era - 2);
       v.jobTimer -= dt;
       if (v.jobTimer <= 0) {
         v.jobTimer = 1.5 + rand() * 0.5;
@@ -1563,33 +1565,206 @@ export class Sim {
       expires: w.time + 150,
     });
 
+    // What people ask for, and how they say it, belongs to their age:
+    // 0 stone · 1 bronze · 2 iron · 3 medieval · 4 industrial · 5 modern · 6 space.
+    const e = v.era;
+    const by = <T,>(...opts: T[]) => opts[Math.min(e, opts.length - 1)];
+    const town = by('bộ lạc', 'làng', 'thành', 'thành', 'thành phố', 'thành phố', 'đô thị');
+
     if (v.enemies.size) {
       const enemy = this.villages[[...v.enemies][0]];
       if (v.losses > v.kills + 3 || v.pop < enemy.pop * 0.7) {
         return v.culture.traits.aggression >= 1.3
-          ? mk('smite', `Hỡi ${god}, xin giáng sấm sét trừng phạt ${enemy.name}!`, `Họ đã mất ${v.losses} chiến binh trong cuộc chiến.`, enemy.id)
-          : mk('peace', `Xin ${god} chấm dứt chiến tranh với ${enemy.name}.`, `Chiến tranh đã cướp đi ${v.losses} sinh mạng.`, enemy.id);
+          ? mk(
+              'smite',
+              by(
+                `Hỡi ${god}, xin giáng sấm sét xuống bộ lạc ${enemy.base}!`,
+                `Hỡi ${god}, xin giáng sấm sét trừng phạt ${enemy.name}!`,
+                `Hỡi ${god}, xin giáng sấm sét trừng phạt ${enemy.name}!`,
+                `Lạy ${god}, xin giáng thiên phạt xuống quân xâm lược ${enemy.name}!`,
+                `Lạy ${god}, xin giáng cơn thịnh nộ lên các nhà máy và pháo đài của ${enemy.name}!`,
+                `Lạy ${god}, xin trừng phạt những kẻ đã ném bom ${v.base}!`,
+                `${god} ơi, xin vô hiệu hóa hạm đội và chiến giáp của ${enemy.name}!`,
+              ),
+              `Họ đã mất ${v.losses} chiến binh trong cuộc chiến.`,
+              enemy.id,
+            )
+          : mk(
+              'peace',
+              by(
+                `Xin ${god} cho hai bộ lạc thôi chém giết nhau.`,
+                `Xin ${god} chấm dứt chiến tranh với ${enemy.name}.`,
+                `Xin ${god} chấm dứt chiến tranh với ${enemy.name}.`,
+                `Lạy ${god}, xin cho hai nước giảng hòa, binh đao chấm dứt.`,
+                `Xin ${god} cho hai bên ngồi vào bàn đàm phán, ký hòa ước.`,
+                `Xin ${god} cho lệnh ngừng bắn với ${enemy.name}, cho con em chúng con trở về.`,
+                `Xin ${god} cho các hội đồng liên hành tinh lập lại hòa bình với ${enemy.name}.`,
+              ),
+              `Chiến tranh đã cướp đi ${v.losses} sinh mạng.`,
+              enemy.id,
+            );
       }
-      return mk('victory', `Xin ${god} phù hộ cho đoàn quân ${v.base} chiến thắng!`, `Họ đang giao chiến với ${enemy.name}.`, enemy.id);
+      return mk(
+        'victory',
+        by(
+          `Xin ${god} cho giáo mác các chiến binh sắc bén, đánh thắng ${enemy.base}!`,
+          `Xin ${god} phù hộ cho đoàn quân ${v.base} chiến thắng!`,
+          `Xin ${god} phù hộ cho đạo quân ${v.base} phá tan quân thù!`,
+          `Lạy ${god}, xin phù hộ các hiệp sĩ và cung thủ của ${v.base} toàn thắng!`,
+          `Xin ${god} phù hộ cho pháo binh và tàu chiến ${v.base} giành chiến thắng!`,
+          `Xin ${god} phù hộ cho không quân và lục quân ${v.base} chiến thắng!`,
+          `Xin ${god} phù hộ cho hạm đội và chiến giáp ${v.base} khải hoàn!`,
+        ),
+        `Họ đang giao chiến với ${enemy.name}.`,
+        enemy.id,
+      );
     }
-    if (w.localTemp(center) < 2) return mk('warmth', `Xin ${god} xua tan giá rét, mang mùa xuân trở lại.`, `Trời lạnh ${Math.round(w.localTemp(center))}°C, ruộng đồng đóng băng.`);
+    if (w.localTemp(center) < 2)
+      return mk(
+        'warmth',
+        by(
+          `Xin ${god} xua tan giá rét, cho lửa trại đừng tắt.`,
+          `Xin ${god} xua tan giá rét, mang mùa xuân trở lại.`,
+          `Xin ${god} xua tan giá rét, mang mùa xuân trở lại.`,
+          `Lạy ${god}, xin cho mùa đông khắc nghiệt sớm qua đi.`,
+          `Xin ${god} cho than đá đủ dùng qua mùa đông này.`,
+          `Xin ${god} chấm dứt đợt rét đậm, lưới điện sắp quá tải rồi.`,
+          `Xin ${god} điều hòa khí hậu, máy sưởi hạt nhân sắp quá tải.`,
+        ),
+        `Trời lạnh ${Math.round(w.localTemp(center))}°C, ruộng đồng đóng băng.`,
+      );
     const here = w.weatherAt(center);
-    if (here === 'drought') return mk('rain', `Xin ${god} chấm dứt hạn hán, ban mưa xuống.`, 'Hạn hán làm ruộng đồng khô nứt, cây rừng bốc cháy.');
-    if (here === 'storm' || (w.rainingAt(center) && v.floods > 0)) return mk('sun', `Xin ${god} cho trời tạnh, nước rút.`, here === 'storm' ? 'Bão tố đang tàn phá vùng đất.' : 'Họ từng bị lũ cuốn trôi nhà cửa.');
+    if (here === 'drought')
+      return mk(
+        'rain',
+        by(
+          `Xin ${god} cho mưa xuống, suối đã cạn khô.`,
+          `Xin ${god} chấm dứt hạn hán, ban mưa xuống.`,
+          `Xin ${god} chấm dứt hạn hán, ban mưa xuống.`,
+          `Lạy ${god}, xin ban mưa cứu lấy mùa màng.`,
+          `Xin ${god} cho mưa xuống, các hồ chứa và kênh đào đã cạn.`,
+          `Xin ${god} chấm dứt đợt hạn hán lịch sử, nhà máy nước đang cạn kiệt.`,
+          `Xin ${god} cho mưa, máy tạo mây đã hỏng hết rồi.`,
+        ),
+        'Hạn hán làm ruộng đồng khô nứt, cây rừng bốc cháy.',
+      );
+    if (here === 'storm' || (w.rainingAt(center) && v.floods > 0))
+      return mk(
+        'sun',
+        by(
+          `Xin ${god} cho trời tạnh, lều trại sắp bị cuốn trôi.`,
+          `Xin ${god} cho trời tạnh, nước rút.`,
+          `Xin ${god} cho trời tạnh, nước rút.`,
+          `Lạy ${god}, xin cho bão tan, nước rút khỏi thành.`,
+          `Xin ${god} cho bão tan, đê điều sắp vỡ.`,
+          `Xin ${god} đẩy cơn bão ra biển, thành phố đang ngập lụt.`,
+          `Xin ${god} làm tan siêu bão, lá chắn thời tiết đã quá tải.`,
+        ),
+        here === 'storm' ? 'Bão tố đang tàn phá vùng đất.' : 'Họ từng bị lũ cuốn trôi nhà cửa.',
+      );
     if (v.food < v.pop) {
       return here === 'sun'
-        ? mk('rain', `Xin ${god} ban mưa xuống cho ruộng đồng.`, `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`)
-        : mk('harvest', `Xin ${god} ban cho một mùa bội thu.`, `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`);
+        ? mk(
+            'rain',
+            by(
+              `Xin ${god} ban mưa cho cây trái ra quả.`,
+              `Xin ${god} ban mưa xuống cho ruộng đồng.`,
+              `Xin ${god} ban mưa xuống cho ruộng đồng.`,
+              `Lạy ${god}, xin ban mưa thuận cho ruộng lúa.`,
+              `Xin ${god} ban mưa cho các đồn điền.`,
+              `Xin ${god} ban mưa, giá lương thực đang tăng vọt.`,
+              `Xin ${god} ban mưa cho các nông trại thủy canh.`,
+            ),
+            `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`,
+          )
+        : mk(
+            'harvest',
+            by(
+              `Xin ${god} cho chúng con hái lượm đủ ăn.`,
+              `Xin ${god} ban cho một mùa bội thu.`,
+              `Xin ${god} ban cho một mùa bội thu.`,
+              `Lạy ${god}, xin cho mùa màng bội thu, kho lẫm đầy ắp.`,
+              `Xin ${god} cho nhà máy và đồng ruộng làm ra đủ cái ăn.`,
+              `Xin ${god} cứu ${v.base} khỏi khủng hoảng lương thực.`,
+              `Xin ${god} cho các trạm tổng hợp thực phẩm hoạt động trở lại.`,
+            ),
+            `Kho chỉ còn ${Math.floor(v.food)} phần ăn cho ${v.pop} người.`,
+          );
     }
-    if (v.jobs.trees.length < 6) return mk('forest', `Xin ${god} cho rừng xanh mọc lại quanh làng.`, 'Cây cối quanh làng đã bị chặt gần hết.');
-    if (this.animals.grid.count(v.cx, v.cy, v.radius + 8, (a) => a.kind === 'deer') < 2) {
-      return mk('game', `Xin ${god} ban cho muông thú để săn bắt.`, 'Thú rừng quanh đây đã biến mất.');
+    if (v.jobs.trees.length < 6)
+      return mk(
+        'forest',
+        by(
+          `Xin ${god} cho rừng xanh mọc lại quanh bộ lạc.`,
+          `Xin ${god} cho rừng xanh mọc lại quanh làng.`,
+          `Xin ${god} cho rừng xanh mọc lại quanh thành.`,
+          `Lạy ${god}, xin cho rừng xanh tốt lại, thợ mộc không còn gỗ.`,
+          `Xin ${god} cho rừng hồi sinh, khói nhà máy đã làm cây chết hết.`,
+          `Xin ${god} phủ xanh lại đồi trọc, không khí ô nhiễm quá.`,
+          `Xin ${god} giúp hồi sinh hệ sinh thái quanh ${v.base}.`,
+        ),
+        `Cây cối quanh ${town} đã bị chặt gần hết.`,
+      );
+    // Only hunters and herders pray for game.
+    if (e <= 1 && this.animals.grid.count(v.cx, v.cy, v.radius + 8, (a) => a.kind === 'deer') < 2) {
+      return mk('game', e === 0 ? `Xin ${god} ban cho muông thú để săn bắt.` : `Xin ${god} cho đàn gia súc và thú rừng sinh sôi.`, 'Thú rừng quanh đây đã biến mất.');
     }
-    if (v.pop < 15) return mk('fertility', `Xin ${god} ban phước cho con cháu đầy đàn.`, `Làng chỉ có ${v.pop} người.`);
+    if (v.pop < 15)
+      return mk(
+        'fertility',
+        by(
+          `Xin ${god} ban phước cho bộ lạc đông người.`,
+          `Xin ${god} ban phước cho con cháu đầy đàn.`,
+          `Xin ${god} ban phước cho con cháu đầy đàn.`,
+          `Lạy ${god}, xin cho dòng họ đông con nhiều cháu.`,
+          `Xin ${god} cho ${v.base} thêm nhân công.`,
+          `Xin ${god} cho các gia đình trẻ thêm con, dân số đang già đi.`,
+          `Xin ${god} cho ${v.base} đông dân như các thuộc địa vũ trụ.`,
+        ),
+        `${town[0].toUpperCase() + town.slice(1)} chỉ có ${v.pop} người.`,
+      );
     const roll = rand();
-    if (roll < 0.4 && v.era < MAX_ERA) return mk('knowledge', `Xin ${god} khai sáng tri thức cho ${v.base}.`, `Họ khao khát tiến tới ${ERAS[v.era + 1].name}.`);
-    if (roll < 0.7) return mk('harvest', `Xin ${god} ban cho một mùa bội thu.`, 'Lời cầu nguyện thường niên của dân làng.');
-    return mk('fertility', `Xin ${god} phù hộ cho các gia đình đông con.`, 'Họ mong dân tộc mình hưng thịnh.');
+    if (roll < 0.4 && v.era < MAX_ERA)
+      return mk(
+        'knowledge',
+        by(
+          `Xin ${god} chỉ cho chúng con cách giữ lửa và rèn đá sắc hơn.`,
+          `Xin ${god} dạy chúng con đúc đồng sáng loáng.`,
+          `Xin ${god} dạy chúng con luyện sắt, viết chữ.`,
+          `Lạy ${god}, xin khai sáng cho các học giả của ${v.base}.`,
+          `Xin ${god} soi đường cho các nhà phát minh của ${v.base}.`,
+          `Xin ${god} cho các nhà khoa học ${v.base} có bước đột phá.`,
+          `Xin ${god} mở cánh cửa tri thức vũ trụ cho ${v.base}.`,
+        ),
+        `Họ khao khát tiến tới ${ERAS[v.era + 1].name}.`,
+      );
+    if (roll < 0.7)
+      return mk(
+        'harvest',
+        by(
+          `Xin ${god} cho rừng nhiều quả ngọt.`,
+          `Xin ${god} ban cho một mùa bội thu.`,
+          `Xin ${god} ban cho một mùa bội thu.`,
+          `Lạy ${god}, xin cho mùa màng bội thu, chợ phiên đông vui.`,
+          `Xin ${god} cho buôn bán phát đạt, mùa màng bội thu.`,
+          `Xin ${god} cho kinh tế ${v.base} tăng trưởng.`,
+          `Xin ${god} cho các trạm năng lượng và nông trại vũ trụ dồi dào.`,
+        ),
+        e >= 4 ? 'Lời nguyện cầu đầu năm của người dân.' : 'Lời cầu nguyện thường niên của dân làng.',
+      );
+    return mk(
+      'fertility',
+      by(
+        `Xin ${god} phù hộ cho bộ lạc sinh sôi.`,
+        `Xin ${god} phù hộ cho các gia đình đông con.`,
+        `Xin ${god} phù hộ cho các gia đình đông con.`,
+        `Lạy ${god}, xin cho gia đình hạnh phúc, con cháu hiếu thảo.`,
+        `Xin ${god} cho trẻ em khỏe mạnh, khỏi dịch bệnh.`,
+        `Xin ${god} cho mọi gia đình bình an, khỏe mạnh.`,
+        `Xin ${god} cho hậu duệ chúng con vươn tới các vì sao.`,
+      ),
+      'Họ mong dân tộc mình hưng thịnh.',
+    );
   }
 
   answerWish(id: number, yes: boolean, by = 0) {
@@ -2213,6 +2388,8 @@ export class Sim {
       h.health -= dt * 0.03;
       h.harm = 'chết rét';
     }
+    // From the industrial age on, imports and relief keep people from starving — unless the city is besieged.
+    if (v && v.era >= 4 && v.siegeT === 0) h.hunger = Math.min(h.hunger, 0.9);
     if (h.hunger >= 1) {
       h.health -= dt * 0.02;
       h.harm = 'chết đói';

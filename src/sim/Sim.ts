@@ -299,6 +299,8 @@ export class Village {
   }
   /** Extra land the city has spread over beyond its era's core (grows as it needs room). */
   reach = 0;
+  /** Seconds an enemy army has held the city unopposed. */
+  siegeT = 0;
   /** Plots where homes were destroyed, waiting to be rebuilt. */
   ruins: number[] = [];
   get radius() {
@@ -1166,19 +1168,35 @@ export class Sim {
       }
 
       // An undefended city falls to the army standing in it.
-      if (v.enemies.size && v.pop <= 3) {
+      // A city whose defenders are beaten falls to the army holding it; its people become the victor's.
+      if (v.enemies.size) {
+        const count = new Map<number, number>();
+        let defenders = 0;
+        this.humanGrid.each(v.cx, v.cy, v.radius * 0.8, (o) => {
+          if (o.role !== 'soldier' || o.village < 0) return;
+          const n = this.villages[o.village]?.nation;
+          if (n === v.nation) defenders++;
+          else if (v.hostileTo(o.village)) count.set(n, (count.get(n) ?? 0) + 1);
+        });
         let attacker: Village | null = null;
         let n = 0;
-        this.humanGrid.each(v.cx, v.cy, v.radius * 0.7, (o) => {
-          if (o.role === 'soldier' && o.village >= 0 && v.hostileTo(o.village)) {
-            n++;
-            attacker = this.villages[o.village].capital;
+        for (const [k, c] of count) {
+          if (c > n) {
+            n = c;
+            attacker = this.villages[k];
           }
-        });
-        if (attacker && n >= 3) {
+        }
+        const holding = attacker && defenders === 0 && n >= Math.max(3, Math.min(10, v.pop * 0.12));
+        v.siegeT = holding ? v.siegeT + dt : Math.max(0, v.siegeT - dt);
+        if (holding && v.siegeT > 8) {
           const a = attacker as Village;
-          this.chronicle(a, `🏴 Quân ${a.name} chiếm được ${v.name}!`);
+          const from = v.capital;
+          v.siegeT = 0;
+          this.chronicle(a, `🏴 Quân ${a.name} đánh bại quân giữ thành, chiếm được ${v.base}! ${v.base} giờ thuộc về ${a.name}.`);
+          this.chronicle(from, `🏳️ ${v.base} thất thủ, rơi vào tay ${a.name}.`, false);
+          this.toasts.push({ icon: '🏴', title: 'Thành thất thủ!', text: `${v.base} → ${a.name}` });
           this.transferCity(v, a);
+          this.stats.annexations++;
         }
       }
 
@@ -3529,7 +3547,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

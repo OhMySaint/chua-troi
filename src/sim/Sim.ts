@@ -7,7 +7,7 @@ import { World } from '../world/World';
 import { ACHIEVEMENTS } from './achievements';
 import { Animal, AnimalSystem } from './Animals';
 import { type Culture, type Terrain, cultureById, cultureForTerrain, surveyTerrain } from './cultures';
-import { ERAS, MAX_ERA } from './eras';
+import { ERAS, MAX_ERA, formatPop } from './eras';
 import { Grid } from './Grid';
 
 export type Action =
@@ -301,6 +301,10 @@ export class Village {
   reach = 0;
   /** Seconds an enemy army has held the city unopposed. */
   siegeT = 0;
+  /** People lost to collapsing, burning or drowned homes this moment (reported, then reset). */
+  toll = 0;
+  /** Ruined plots rebuilt so far in the current recovery. */
+  rebuilt = 0;
   /** Plots where homes were destroyed, waiting to be rebuilt. */
   ruins: number[] = [];
   get radius() {
@@ -1089,6 +1093,17 @@ export class Sim {
           this.humanGrid.each(e.x, e.y, e.r + 1, (h) => this.kill(h, 'chết vì thiên thạch'));
           for (const a of this.animals.list) if (Math.hypot(a.x - e.x, a.y - e.y) < e.r + 1) a.dead = true;
         }
+        // Casualties: the nearer a city to the blow, the more of its people die.
+        const reach = e.kind === 'quake' ? e.r * 2.5 + 10 : e.kind === 'meteor' ? e.r * 3 + 8 : 22;
+        const worst = e.kind === 'quake' ? 0.3 : e.kind === 'meteor' ? 0.45 : 0.35;
+        for (const v of this.villages) {
+          if (!v.alive) continue;
+          const d = Math.max(0, Math.hypot(v.cx - e.x, v.cy - e.y) - v.radius * 0.5);
+          if (d > reach) continue;
+          const f = worst * (1 - d / reach);
+          const cause = e.kind === 'quake' ? 'chết trong động đất' : e.kind === 'meteor' ? 'chết vì thiên thạch' : 'chết vì núi lửa phun trào';
+          this.casualties(v, f, cause, e.kind === 'quake' ? '🏚️ Động đất' : e.kind === 'meteor' ? '☄️ Thiên thạch' : '🌋 Núi lửa');
+        }
         for (const v of this.villages) {
           if (!v.alive || Math.hypot(v.cx - e.x, v.cy - e.y) > v.radius + 15) continue;
           v.addFaith(this.actor, 6);
@@ -1103,6 +1118,21 @@ export class Sim {
       if (e.what === 'farm') {
         v.farms.delete(e.i);
         continue;
+      }
+      // Those inside a home that falls, burns or is swept away may not get out.
+      if (v.houses.has(e.i) && rand() < (e.type === 'burn' ? 0.35 : 0.5)) {
+        let victim: Human | null = null;
+        for (const o of this.humans) {
+          if (o.village !== v.id || o.dead) continue;
+          if (o.inside || Math.hypot(o.x - cx(e.i), o.y - cy(e.i)) < 3) {
+            victim = o;
+            break;
+          }
+        }
+        if (victim) {
+          this.kill(victim, e.type === 'flood' ? 'chết đuối trong lũ' : e.type === 'burn' ? 'chết cháy' : 'bị vùi dưới nhà sập');
+          v.toll++;
+        }
       }
       if (v.houses.has(e.i) && v.ruins.length < 300) {
         if (!v.ruins.length && v.alive) this.chronicle(v, `🔨 Người dân ${v.name} dọn đống đổ nát, bắt tay xây dựng lại.`, false);
@@ -1136,6 +1166,30 @@ export class Sim {
       }
     }
     w.events.length = 0;
+    for (const v of this.villages) {
+      // Tallied over a while so one fire or flood makes one entry, not dozens.
+      if (!v.toll || !this.once(`toll${v.id}`, 20)) continue;
+      if (v.alive) this.chronicle(v, `💀 Khoảng ${formatPop(v.toll * ERAS[v.era].popScale)} người ở ${v.name} thiệt mạng khi nhà cửa bị tàn phá.`, false);
+      v.toll = 0;
+    }
+  }
+
+  /** A disaster takes a share of a city's people; the chronicle counts the dead (as the people they stand for). */
+  private casualties(v: Village, share: number, cause: string, what: string) {
+    if (share <= 0.01) return;
+    let n = 0;
+    for (const h of this.humans) {
+      if (h.village !== v.id || h.dead) continue;
+      if (rand() < share) {
+        this.kill(h, cause);
+        n++;
+      }
+    }
+    if (!n) return;
+    v.trauma = Math.min(1, v.trauma + share);
+    const dead = formatPop(n * ERAS[v.era].popScale);
+    this.chronicle(v, `💀 ${what} cướp đi khoảng ${dead} sinh mạng ở ${v.name}.`);
+    if (share > 0.15) this.toasts.push({ icon: '💀', title: `${v.base} tang thương`, text: `${what}: ~${dead} người chết` });
   }
 
   /** True at most once per cooldown for a key (for throttling noisy history). */
@@ -2669,9 +2723,12 @@ export class Sim {
     this.spread(v);
     // Ruins that have been rebuilt, or lie under sea, mountain or someone else's house, are done with.
     if (v.ruins.length) {
-      const before = v.ruins.length;
+      for (const i of v.ruins) if (w.cover[i] === Cover.HOUSE && w.owner[i] === v.id) v.rebuilt++;
       v.ruins = v.ruins.filter((i) => !w.isWater(i) && w.height[i] < HILL_MAX && (w.cover[i] === Cover.NONE || w.cover[i] === Cover.ASH));
-      if (before >= 5 && !v.ruins.length) this.chronicle(v, `🏗️ ${v.name} đã được xây dựng lại sau thảm họa.`);
+      if (!v.ruins.length) {
+        if (v.rebuilt >= 5) this.chronicle(v, `🏗️ ${v.name} đã được xây dựng lại sau thảm họa.`);
+        v.rebuilt = 0;
+      }
     }
     const r = v.radius;
     const center = idx(v.cx, v.cy);
@@ -3547,7 +3604,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

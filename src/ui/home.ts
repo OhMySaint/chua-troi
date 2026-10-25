@@ -11,7 +11,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&
 
 let home: HTMLDivElement;
 let view: 'main' | 'solo' | 'setup' | 'msetup' | 'settings' | 'bye' = 'main';
-const setup = { layout: 'random' as 'random' | 'halves' };
+const setup = { layout: 'random' as 'random' | 'halves', grows: true };
 
 /** The title screen: a living world drifts by behind the menu. */
 export function mountHome() {
@@ -29,10 +29,14 @@ export function mountHome() {
         break;
       case 'new':
         setup.layout = 'random';
+        setup.grows = true;
         view = 'setup';
         break;
+      case 'grows':
+        setup.grows = b.dataset.value === '1';
+        break;
       case 'start':
-        sim.newWorld(undefined, { layout: setup.layout, tribes: 0 });
+        sim.newWorld(undefined, { layout: setup.layout, tribes: 0, grows: setup.grows });
         enterEmptyWorld();
         return;
       case 'layout':
@@ -110,6 +114,8 @@ export function showHome() {
 function enterEmptyWorld() {
   enterGame();
   ui.tool = 'human';
+  // In a growing world, start the camera over the cradle of humanity.
+  if (sim.world.grows) ui.focus = { x: sim.world.origin.x, y: sim.world.origin.y };
   sim.toasts.push({
     icon: '🧑',
     title: 'Gieo sự sống',
@@ -251,6 +257,15 @@ async function render() {
         ${opt('random', '🎲 Ngẫu nhiên', '3–5 lục địa lớn')}
         ${opt('halves', '⚖️ Chia đôi', '2 lục địa cân bằng, mỗi thần một bên')}
       </div>
+      ${
+        view === 'setup'
+          ? `<div class="set-title">Thế giới</div>
+      <div class="choice">
+        <button data-go="grows" data-value="1" class="${setup.grows ? 'active' : ''}">🌱 Mở rộng dần<small>Bắt đầu từ một vùng đất; đất mới trồi lên khi dân đông lên</small></button>
+        <button data-go="grows" data-value="0" class="${setup.grows ? '' : 'active'}">🗺️ Toàn bộ ngay<small>Mọi lục địa có sẵn từ đầu</small></button>
+      </div>`
+          : ''
+      }
       <p class="muted">Thế giới bắt đầu hoang sơ, chưa có bóng người. Hãy dùng 🧑 Người để gieo dân — vài người đứng gần nhau ở nơi đất tốt, gần nước sẽ tự lập bộ lạc, rồi lớn dần thành thành bang và quốc gia.</p>
       ${
         view === 'setup'

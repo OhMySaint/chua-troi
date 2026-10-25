@@ -20,6 +20,7 @@ import { fbm, rng } from './noise';
 export type WorldEvent =
   | { type: 'flood' | 'burn' | 'quake' | 'slide'; i: number; owner: number; what: 'house' | 'farm' }
   | { type: 'lightning'; x: number; y: number }
+  | { type: 'emerge'; x: number; y: number; x0: number; y0: number; x1: number; y1: number; cells: number }
   | { type: 'impact'; x: number; y: number; r: number; kind: 'meteor' | 'quake' | 'volcano' };
 
 const WEATHER_TEMP: Record<Weather, number> = { sun: 24, rain: 14, storm: 10, snow: -10, drought: 36 };
@@ -68,6 +69,28 @@ export class World {
   building = new Uint8Array(N);
   /** Road surface (Road.*). */
   road = new Uint8Array(N);
+  // ---- A world that grows: lands beyond the first rise from the sea as people multiply ----
+  /** The land each cell will become (heights as generated). */
+  targetH = new Float32Array(N);
+  /** Landmass id per cell (-1 for sea). */
+  landId = new Int16Array(N).fill(-1);
+  /** 1 once a landmass has risen (or is rising). */
+  landUp: number[] = [];
+  /** Distance of each landmass from the cradle of humanity. */
+  landDist: number[] = [];
+  /** Bounding boxes of landmasses [x0, y0, x1, y1]. */
+  landBox: number[][] = [];
+  /** Landmasses rising right now. */
+  rising: number[] = [];
+  /** Whether this world grows at all. */
+  grows = false;
+  /** How far from the cradle the world reaches (cells). */
+  reach = 0;
+  /** Population the world reach is computed from (set by the simulation). */
+  people = 0;
+  origin = { x: W / 2, y: H / 2 };
+  private landCells: Int32Array = new Int32Array(0);
+  private landStart: number[] = [];
   /** 1 where the road is a bridge deliberately built over water. */
   bridge = new Uint8Array(N);
   /** Permanent climate offset per cell from latitude (poles are colder). */
@@ -101,7 +124,7 @@ export class World {
   phase = 0;
   vents: Vent[] = [];
 
-  generate(seed: number, layout: 'random' | 'halves' = 'random') {
+  generate(seed: number, layout: 'random' | 'halves' = 'random', grows = false) {
     this.layout = layout;
     const r = rng(seed);
     const s = Math.floor(r() * 1e6);
@@ -208,7 +231,128 @@ export class World {
     }
 
     this.carveRivers(r, 90);
+    this.grows = grows;
+    this.rising = [];
+    if (grows) this.sinkTheFarLands();
     this.surveyClimate();
+  }
+
+  /** Label landmasses, keep the greatest one (and what lies close by), and sink the rest beneath the sea. */
+  private sinkTheFarLands() {
+    const sea = this.seaLevel;
+    this.targetH.set(this.height);
+    this.landId.fill(-1);
+    const sizes: number[] = [];
+    const stack = new Int32Array(N);
+    let n = 0;
+    for (let i = 0; i < N; i++) {
+      if (this.landId[i] >= 0 || this.height[i] < sea) continue;
+      let top = 0;
+      stack[top++] = i;
+      this.landId[i] = n;
+      let size = 0;
+      while (top) {
+        const j = stack[--top];
+        size++;
+        const x = j % W;
+        for (const k of [j - 1, j + 1, j - W, j + W]) {
+          if (k < 0 || k >= N || this.landId[k] >= 0 || this.height[k] < sea) continue;
+          if ((k === j - 1 && x === 0) || (k === j + 1 && x === W - 1)) continue;
+          this.landId[k] = n;
+          stack[top++] = k;
+        }
+      }
+      sizes.push(size);
+      n++;
+      if (n >= 32000) break; // (never in practice) ids must fit the save format
+    }
+    this.indexLands(n);
+    const box = this.landBox;
+    const sum = Array.from({ length: n }, () => [0, 0]);
+    for (let i = 0; i < N; i++) {
+      const c = this.landId[i];
+      if (c < 0) continue;
+      sum[c][0] += i % W;
+      sum[c][1] += (i / W) | 0;
+    }
+    // The cradle: the centre of the greatest landmass.
+    let big = 0;
+    for (let c = 1; c < n; c++) if (sizes[c] > sizes[big]) big = c;
+    this.origin = { x: sum[big][0] / sizes[big], y: sum[big][1] / sizes[big] };
+    this.landDist = box.map((b) => {
+      const dx = Math.max(b[0] - this.origin.x, 0, this.origin.x - b[2]);
+      const dy = Math.max(b[1] - this.origin.y, 0, this.origin.y - b[3]);
+      return Math.hypot(dx, dy);
+    });
+    this.landUp = sizes.map((_, c) => (c === big || this.landDist[c] < 25 ? 1 : 0));
+    this.reach = 25;
+    // Sink everything else: shallow seas where lands will one day rise.
+    for (let c = 0; c < n; c++) {
+      if (this.landUp[c]) continue;
+      for (let k = this.landStart[c]; k < this.landStart[c + 1]; k++) {
+        const i = this.landCells[k];
+        this.height[i] = sea - 0.02 - Math.min(0.03, (this.targetH[i] - sea) * 0.1);
+        this.cover[i] = Cover.NONE;
+        this.snow[i] = 0;
+      }
+    }
+  }
+
+  /** Group cells by landmass and find each one's bounds (also after loading a save). */
+  indexLands(n = this.landUp.length) {
+    const count = new Int32Array(n + 1);
+    for (let i = 0; i < N; i++) if (this.landId[i] >= 0) count[this.landId[i] + 1]++;
+    for (let k = 1; k <= n; k++) count[k] += count[k - 1];
+    this.landStart = Array.from(count);
+    const fill = count.slice();
+    this.landCells = new Int32Array(count[n]);
+    const box = Array.from({ length: n }, () => [W, H, 0, 0]);
+    for (let i = 0; i < N; i++) {
+      const c = this.landId[i];
+      if (c < 0) continue;
+      this.landCells[fill[c]++] = i;
+      const x = i % W;
+      const y = (i / W) | 0;
+      const b = box[c];
+      if (x < b[0]) b[0] = x;
+      if (y < b[1]) b[1] = y;
+      if (x > b[2]) b[2] = x;
+      if (y > b[3]) b[3] = y;
+    }
+    this.landBox = box;
+  }
+
+  /** The world reaches further as humanity grows; lands within reach rise from the sea. */
+  private growTick() {
+    if (!this.grows || !this.landUp.length) return;
+    this.reach = Math.max(this.reach, 25 + 16 * Math.sqrt(this.people));
+    for (let c = 0; c < this.landUp.length; c++) {
+      if (this.landUp[c] || this.landDist[c] > this.reach) continue;
+      this.landUp[c] = 1;
+      this.rising.push(c);
+    }
+    for (const c of [...this.rising]) {
+      let done = true;
+      for (let k = this.landStart[c]; k < this.landStart[c + 1]; k++) {
+        const i = this.landCells[k];
+        const t = this.targetH[i];
+        if (this.height[i] < t) {
+          this.height[i] = Math.min(t, this.height[i] + 0.006);
+          done = false;
+        }
+      }
+      if (!done) continue;
+      this.rising = this.rising.filter((x) => x !== c);
+      // Risen land greens over: forests return where the soil is good.
+      for (let k = this.landStart[c]; k < this.landStart[c + 1]; k++) {
+        const i = this.landCells[k];
+        if (this.isFertile(i) && this.jitter[i] > 0.45 && this.cover[i] === Cover.NONE) this.cover[i] = Cover.FOREST;
+        if (this.chill(i) > 18) this.snow[i] = 1;
+      }
+      const b = this.landBox[c];
+      this.events.push({ type: 'emerge', x: (b[0] + b[2]) >> 1, y: (b[1] + b[3]) >> 1, x0: b[0], y0: b[1], x1: b[2], y1: b[3], cells: this.landStart[c + 1] - this.landStart[c] });
+      this.surveyClimate();
+    }
   }
 
   private carveRivers(r: () => number, count: number) {
@@ -544,6 +688,7 @@ export class World {
 
   tick(dt: number) {
     this.time += dt;
+    this.growTick();
     const night = 1 - this.daylight();
     this.weatherTick(dt);
     const counts: Record<string, number> = {};

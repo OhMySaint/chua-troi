@@ -27,6 +27,7 @@ const tag = (a: Typed) => (a instanceof Float32Array ? 'f32' : a instanceof Int1
 /** Float layers are stored quantised (precision far below what's visible) so saves compress well. */
 const QUANT: Record<string, [string, number]> = {
   height: ['u16', 65535],
+  targetH: ['u16', 65535],
   snow: ['u8', 255],
   jitter: ['u8', 255],
   latChill: ['u8', 8],

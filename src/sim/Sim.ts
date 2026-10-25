@@ -604,11 +604,18 @@ export class Sim {
     if (global) this.say(text);
   }
 
+  /** A compass direction in Vietnamese for an offset (north is up). */
+  private compass(dx: number, dy: number) {
+    const a = (Math.atan2(-dy, dx) * 180) / Math.PI;
+    const dirs = ['đông', 'đông bắc', 'bắc', 'tây bắc', 'tây', 'tây nam', 'nam', 'đông nam'];
+    return dirs[(Math.round(a / 45) + 8) % 8];
+  }
+
   /** Seed of the current world (multiplayer peers generate the same world from it). */
   seed = 0;
 
   /** Map layout and number of starting stone-age clans (0 = an empty world for the gods to people). */
-  newWorld(seed = Date.now() % 2147483647, opts: { layout?: 'random' | 'halves'; tribes?: number } = {}) {
+  newWorld(seed = Date.now() % 2147483647, opts: { layout?: 'random' | 'halves'; tribes?: number; grows?: boolean } = {}) {
     const layout = opts.layout ?? 'random';
     const tribes = opts.tribes ?? 0;
     this.generation++;
@@ -632,7 +639,7 @@ export class Sim {
     this.wars = [];
     this.warFrom = null;
     this.peaceFrom = null;
-    this.world.generate(seed, layout);
+    this.world.generate(seed, layout, opts.grows ?? false);
     this.startTime = this.world.time;
     this.humans = [];
     this.villages = [];
@@ -1086,6 +1093,7 @@ export class Sim {
     }
     const dt = STEP;
     if (this.stepNo % TICK_STEPS === 0) {
+      this.world.people = this.humans.length;
       this.world.tick(TICK);
       this.airTick();
       this.handleEvents();
@@ -1200,6 +1208,20 @@ export class Sim {
           if (e.kind === 'quake') v.quakes++;
           const what = e.kind === 'meteor' ? 'Lửa trời giáng xuống' : e.kind === 'quake' ? 'Mặt đất rung chuyển dữ dội' : 'Một ngọn núi lửa trồi lên phun trào';
           this.chronicle(v, `😨 ${what} gần ${v.name}. Họ tin rằng ${this.godNames[this.actor]} đang nổi giận và cầu khấn nhiều hơn.`, false);
+        }
+        continue;
+      }
+      if (e.type === 'emerge') {
+        // New land has risen: wildlife wanders in, and the chronicles take note.
+        const dir = this.compass(e.x - this.world.origin.x, e.y - this.world.origin.y);
+        const big = e.cells > 20000 ? 'Một lục địa mới' : e.cells > 3000 ? 'Một hòn đảo lớn' : 'Một hòn đảo nhỏ';
+        this.say(`🏝️ ${big} trồi lên từ biển ở phía ${dir}.`);
+        if (e.cells > 800) this.toasts.push({ icon: '🏝️', title: 'Đất mới trồi lên!', text: `${big} ở phía ${dir}` });
+        this.repaints.push({ x: (e.x0 + e.x1) / 2, y: (e.y0 + e.y1) / 2, r: Math.max(e.x1 - e.x0, e.y1 - e.y0) / 2 + 4, color: -1 });
+        for (let k = 0; k < Math.min(12, e.cells / 600); k++) {
+          const x = e.x0 + rand() * (e.x1 - e.x0);
+          const y = e.y0 + rand() * (e.y1 - e.y0);
+          this.spawnAnimal(rand() < 0.8 ? 'deer' : 'wolf', x, y);
         }
         continue;
       }
@@ -4428,6 +4450,12 @@ export class Sim {
         dayLength: w.dayLength,
         phase: w.phase,
         vents: w.vents,
+        grows: w.grows,
+        reach: w.reach,
+        origin: w.origin,
+        landUp: w.landUp,
+        landDist: w.landDist,
+        rising: w.rising,
       },
       animals: this.animals.list.map((a) => ({
         ...a,
@@ -4447,6 +4475,8 @@ export class Sim {
         building: w.building,
         road: w.road,
         bridge: w.bridge,
+        // A growing world remembers the lands still under the sea.
+        ...(w.grows ? { targetH: w.targetH, landId: w.landId } : {}),
       },
     };
   }
@@ -4462,6 +4492,11 @@ export class Sim {
     Object.assign(w, rest);
     if (regionTemp) w.regionTemp.set(regionTemp);
     w.systems = (systems ?? []).map((o: object) => ({ ...o }));
+    if (!rest.grows) {
+      w.grows = false;
+      w.landUp = [];
+      w.rising = [];
+    } else w.indexLands();
     w.rebuildWeather();
     w.events.length = 0;
     const d = data.sim;

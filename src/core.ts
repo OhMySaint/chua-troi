@@ -33,6 +33,8 @@ export const ui = {
   attract: true,
   /** One-shot: the player just entered the game (camera flies to the people). */
   enter: false,
+  /** Keep the camera on the people you guide. */
+  follow: false,
   /** Cell the camera is centred on (for "weather here"). */
   view: { x: 0, y: 0 },
 };

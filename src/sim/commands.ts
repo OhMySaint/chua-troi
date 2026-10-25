@@ -19,6 +19,10 @@ export type Command = { god: number } & (
   | { t: 'peace'; a: number; b?: number }
   | { t: 'wish'; id: number; yes: boolean }
   | { t: 'godName'; name: string }
+  // Guiding a people
+  | { t: 'choose'; v: number }
+  | { t: 'policy'; v: number; key: 'gov' | 'tax' | 'stance' | 'trade' | 'faith' | 'auto'; value: string | number | boolean }
+  | { t: 'queue'; v: number; kind: string; add: boolean }
 );
 
 /** Commands without the god field, as issued by the UI (the issuing player's god is added). */

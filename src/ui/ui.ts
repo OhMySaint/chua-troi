@@ -8,7 +8,8 @@ import { ACHIEVEMENTS } from '../sim/achievements';
 import { describeTraits } from '../sim/cultures';
 import { ERAS, MAX_ERA, formatPop } from '../sim/eras';
 import { cultureById } from '../sim/cultures';
-import { ACTION_LABEL, SPECIAL_LABEL, type Human, type Village } from '../sim/Sim';
+import { ACTION_LABEL, SPECIALS, SPECIAL_LABEL, type Human, type Village } from '../sim/Sim';
+import { FAITHS, type FaithPolicy, GOVS, STANCES, type Stance, TAXES, civicGold, govsFor } from '../sim/policy';
 import { SPECIAL_KINDS } from '../art/buildings';
 import { tribeStory } from '../sim/story';
 import { BASE_SEA, H, W, WEATHER_LABEL, YEAR, type Weather } from '../world/constants';
@@ -60,14 +61,14 @@ const TOOL_GROUPS: { name: string; tools: ToolDef[] }[] = [
 const TOOLS = TOOL_GROUPS.flatMap((g) => g.tools);
 const WEATHERS: Weather[] = ['sun', 'rain', 'storm', 'snow', 'drought'];
 const SPEEDS = [1, 2, 4, 8];
-type Tab = 'wishes' | 'tribes' | 'history' | 'achievements';
+type Tab = 'people' | 'wishes' | 'tribes' | 'history' | 'achievements';
 
 const GOD_COLORS = ['#ffe14d', '#c08aff'];
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
 
-let tab: Tab = 'wishes';
+let tab: Tab = 'people';
 
 export function mountUI() {
   const toolbar = $('#toolbar');
@@ -155,8 +156,20 @@ export function mountUI() {
   $('#panel').addEventListener('pointerdown', () => (pressing = true));
   window.addEventListener('pointerup', () => setTimeout(() => (pressing = false), 0));
   document.addEventListener('click', (e) => {
-    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-wish],[data-village],[data-focus],[data-war],[data-fold]');
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-wish],[data-village],[data-focus],[data-war],[data-fold],[data-choose],[data-policy],[data-queue],[data-follow]');
     if (!el) return;
+    if (el.dataset.choose) sim.issue({ god: sim.me, t: 'choose', v: Number(el.dataset.choose) });
+    const mine = sim.peopleOf(sim.me);
+    if (el.dataset.policy && mine) {
+      const raw = el.dataset.value ?? '';
+      const value = el.dataset.policy === 'tax' ? Number(raw) : el.dataset.policy === 'trade' || el.dataset.policy === 'auto' ? raw === 'true' : raw;
+      sim.issue({ god: sim.me, t: 'policy', v: mine.id, key: el.dataset.policy as 'gov', value });
+    }
+    if (el.dataset.queue && mine) sim.issue({ god: sim.me, t: 'queue', v: mine.id, kind: el.dataset.queue, add: el.dataset.add === '1' });
+    if (el.dataset.follow) {
+      ui.follow = !ui.follow;
+      if (ui.follow && mine) ui.focus = { x: mine.cx, y: mine.cy };
+    }
     const fold = el.dataset.fold;
     if (fold === 'close') {
       sim.selectedVillage = null;
@@ -323,7 +336,7 @@ function refreshPanel() {
     if (b.dataset.tab === 'wishes') b.innerHTML = `🙏 Ước nguyện${wishCount ? ` <i class="badge">${wishCount}</i>` : ''}`;
   });
 
-  const html = tab === 'wishes' ? wishesTab() : tab === 'tribes' ? tribesTab() : tab === 'history' ? historyTab() : achievementsTab();
+  const html = tab === 'people' ? peopleTab() : tab === 'wishes' ? wishesTab() : tab === 'tribes' ? tribesTab() : tab === 'history' ? historyTab() : achievementsTab();
   if (html !== lastTab) {
     lastTab = html;
     $('#tab-body').innerHTML = html;
@@ -380,7 +393,7 @@ function villageCard(v: Village) {
       ${Array.from({ length: sim.gods }, (_, g) => bar(`${v.patron === g ? '✨' : '🙏'} ${esc(sim.godNames[g].split(' ').slice(-1)[0])}`, v.faiths[g] / 100, GOD_COLORS[g])).join('')}
       <div class="muted">${v.patron >= 0 ? `Thờ ${esc(sim.godNames[v.patron])}` : `Thờ ${esc(v.culture.deity)}`}</div>
       <div class="tags">${describeTraits(v.culture.traits).map((t) => `<span>${t}</span>`).join('')}</div>
-      ${v.alive ? `<div class="card-actions"><button data-focus="${v.id}">📍 Tới ${esc(v.base)}</button>${warPicker(v)}</div>` : ''}
+      ${v.alive ? `<div class="card-actions"><button data-focus="${v.id}">📍 Tới ${esc(v.base)}</button>${sim.peopleOf(sim.me) !== v.capital ? `<button data-choose="${v.id}" title="Dẫn dắt dân tộc này">🌟 Chọn dân tộc này</button>` : ''}${warPicker(v)}</div>` : ''}
       ${part('story', '📖 Truyền thuyết', tribeStory(sim, v).map((p) => `<p class="story">${esc(p)}</p>`).join(''))}
       ${part('history', '📜 Sử ký', `<ul class="history">${history.map((e) => `<li><span class="muted">Năm ${e.year}</span> ${esc(e.text)}</li>`).join('')}</ul>`)}`
       }
@@ -433,6 +446,66 @@ function warPicker(v: Village) {
   return `<span class="war-pick"><select id="war-target">${others
     .map((o) => `<option value="${o.id}">${esc(o.name)}</option>`)
     .join('')}</select><button data-war="${v.id}">⚔️ Tuyên chiến</button></span>`;
+}
+
+/** The people you guide: their realm at a glance, and the levers of government. */
+function peopleTab() {
+  const cap = sim.peopleOf(sim.me);
+  if (!cap) {
+    const ns = sim.nations().sort((a, b) => sim.nationPop(b) - sim.nationPop(a));
+    return `<div class="people">
+      <p class="muted">Chọn một dân tộc để dẫn dắt qua dòng lịch sử: đặt chính thể, thuế, tôn giáo, quyết định xây gì. Bộ lạc đầu tiên do người bạn thả xuống lập nên sẽ tự trở thành dân tộc của bạn.</p>
+      ${ns.length ? ns.map((n) => `<button class="pick" data-choose="${n.id}"><b style="color:${hex(n.color)}">${ERAS[n.era].icon} ${esc(n.name)}</b> <span class="muted">${formatPop(sim.citiesOf(n).reduce((k, c) => k + c.people, 0))} dân · ${esc(n.culture.name)}</span></button>`).join('') : '<p class="muted">Thế giới chưa có dân tộc nào. Dùng 🧑 Người để thả vài người xuống đất tốt gần nước.</p>'}
+    </div>`;
+  }
+  const cities = sim.citiesOf(cap);
+  const people = cities.reduce((n, c) => n + c.people, 0);
+  const opt = (key: string, value: string | number | boolean, on: boolean, label: string, title = '') =>
+    `<button class="opt${on ? ' on' : ''}" data-policy="${key}" data-value="${value}" title="${esc(title)}">${label}</button>`;
+  const govs = govsFor(cap.era);
+  const g = GOVS[cap.gov];
+  const avail = SPECIALS.filter((s) => cap.era >= s.era && s.kind !== 'house');
+  const counts = new Map<string, number>();
+  for (const c of cities) for (const k of c.buildings.values()) counts.set(SPECIAL_KINDS[k], (counts.get(SPECIAL_KINDS[k]) ?? 0) + 1);
+  const recent = cities.flatMap((c) => c.history).sort((a, b) => b.year - a.year).slice(0, 8);
+  const moodColor = cap.mood > 66 ? '#5ad66a' : cap.mood > 33 ? '#e0b84a' : '#e05a4a';
+  return `<div class="people">
+    <div class="people-head">
+      <h3 style="color:${hex(cap.color)}">${ERAS[cap.era].icon} ${esc(cap.name)}</h3>
+      <button class="opt${ui.follow ? ' on' : ''}" data-follow="1" title="Camera luôn theo dõi dân tộc của bạn">🎥 Theo dõi</button>
+    </div>
+    <div class="muted">${esc(cap.culture.name)}${cap.ruler ? ` · ${esc(cap.ruler)}` : ''} · ${ERAS[cap.era].name}</div>
+    <div>👥 ${formatPop(people)} dân · 🏘️ ${cities.length} thành · 💰 ${Math.floor(cap.gold)} vàng</div>
+    ${bar(`😊 Lòng dân ${Math.round(cap.mood)}`, cap.mood / 100, moodColor)}
+    ${cap.econT > 0 ? '<div class="war">📉 Đang khủng hoảng kinh tế</div>' : cap.econT < 0 ? '<div>📈 Kinh tế đang tăng trưởng</div>' : ''}
+    ${cap.enemies.size ? `<div class="war">⚔️ Chiến tranh với ${[...cap.enemies].map((e) => esc(sim.villages[e]?.name ?? '')).join(', ')}</div>` : ''}
+
+    <h4>🏛️ Chính thể</h4>
+    <div class="opts">${govs.map((k) => opt('gov', k, cap.gov === k, `${GOVS[k].icon} ${GOVS[k].name}`, GOVS[k].desc)).join('')}</div>
+    <p class="muted small">${esc(g.desc)}</p>
+
+    <h4>💰 Thuế</h4>
+    <div class="opts">${TAXES.map((t, i) => opt('tax', i, cap.tax === i, `${t.icon} ${t.name}`, `Thu nhập ×${t.income}, lòng dân ${t.mood >= 0 ? '+' : ''}${t.mood}`)).join('')}</div>
+
+    <h4>🛡️ Quân sự</h4>
+    <div class="opts">${(Object.keys(STANCES) as Stance[]).map((k) => opt('stance', k, cap.stance === k, `${STANCES[k].icon} ${STANCES[k].name}`, STANCES[k].desc)).join('')}</div>
+
+    <h4>⛵ Ngoại thương</h4>
+    <div class="opts">${opt('trade', true, cap.openTrade, '⛵ Mở cửa', 'Buôn bán, giao lưu văn hóa với các nước')}${opt('trade', false, !cap.openTrade, '🚪 Bế quan', 'Không giao thương; giữ gìn văn hóa riêng')}</div>
+
+    <h4>🛐 Tôn giáo</h4>
+    <div class="opts">${(Object.keys(FAITHS) as FaithPolicy[]).filter((k) => cap.era >= FAITHS[k].from).map((k) => opt('faith', k, cap.faithPolicy === k, `${FAITHS[k].icon} ${FAITHS[k].name}`, FAITHS[k].desc)).join('')}</div>
+    ${bar(`🙏 Đức tin ${Math.round(cap.faith)}`, cap.faith / 100, '#c8a0ff')}
+
+    <h4>🏗️ Xây dựng <span class="muted small">(mỗi công trình ${civicGold(cap.era)} vàng)</span></h4>
+    <div class="opts">${opt('auto', true, cap.autoBuild, '🤖 Dân tự quyết', 'Dân tự xây thứ họ cần')}${opt('auto', false, !cap.autoBuild, '📋 Theo lệnh', 'Chỉ xây những gì bạn ra lệnh')}</div>
+    ${cap.queue.length ? `<div class="queue">Đang chờ xây: ${cap.queue.map((k) => `<button class="chip" data-queue="${k}" data-add="0" title="Bỏ khỏi hàng đợi">${SPECIAL_LABEL[k as keyof typeof SPECIAL_LABEL]} ✕</button>`).join('')}</div>` : ''}
+    ${avail.length ? '' : '<p class="muted small">Thời đồ đá chưa có công trình công cộng; dân chỉ dựng nhà và làm ruộng.</p>'}
+    <div class="opts build">${avail.map((s) => `<button class="opt" data-queue="${s.kind}" data-add="1" title="Ra lệnh xây">${SPECIAL_LABEL[s.kind]}${counts.get(s.kind) ? ` <span class="muted">×${counts.get(s.kind)}</span>` : ''}</button>`).join('')}</div>
+
+    <h4>📜 Biên niên</h4>
+    <ul class="history">${recent.map((e) => `<li><span class="muted">Năm ${e.year}</span> ${esc(e.text)}</li>`).join('')}</ul>
+  </div>`;
 }
 
 function wishesTab() {

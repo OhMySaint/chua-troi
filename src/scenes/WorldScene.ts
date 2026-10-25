@@ -344,6 +344,15 @@ export class WorldScene extends Phaser.Scene {
       } else this.zoomAt(cam.width / 2, cam.height / 2, cam.zoom * (ui.zoomCmd === 'in' ? 1.4 : 1 / 1.4));
       ui.zoomCmd = null;
     }
+    // Follow the people you guide: their army on campaign, otherwise their capital.
+    const mine = ui.follow && !ui.attract ? sim.peopleOf(sim.me) : null;
+    if (mine) {
+      const on = mine.armyPhase === 'march' || mine.armyPhase === 'siege';
+      const fx = (on ? mine.armyX : mine.cx) * CELL;
+      const fy = (on ? mine.armyY : mine.cy) * CELL;
+      const k = Math.min(1, dt * 1.5);
+      cam.centerOn(cam.midPoint.x + (fx - cam.midPoint.x) * k, cam.midPoint.y + (fy - cam.midPoint.y) * k);
+    }
     if (ui.focus) {
       cam.setZoom(Math.max(cam.zoom, 2.5));
       cam.centerOn(ui.focus.x * CELL, ui.focus.y * CELL);

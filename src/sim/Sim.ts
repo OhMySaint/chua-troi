@@ -9,6 +9,7 @@ import { Animal, AnimalSystem } from './Animals';
 import { type Culture, type Terrain, cultureById, cultureForTerrain, surveyTerrain } from './cultures';
 import { ERAS, MAX_ERA, formatPop } from './eras';
 import { Grid } from './Grid';
+import { FAITHS, type FaithPolicy, GOVS, type Gov, type Stance, TAXES, civicGold, govsFor } from './policy';
 
 export type Action =
   | 'idle'
@@ -105,7 +106,7 @@ const OFFSETS = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3];
 const MAX_POP = 3800;
 
 /** Civic buildings a nation raises as it develops, with the era each unlocks in. */
-const SPECIALS: { kind: Kind; era: number; per: number }[] = [
+export const SPECIALS: { kind: Kind; era: number; per: number }[] = [
   { kind: 'granary', era: 1, per: 25 },
   { kind: 'dock', era: 1, per: 0 },
   { kind: 'market', era: 2, per: 40 },
@@ -324,6 +325,23 @@ export class Village {
   siegeT = 0;
   /** People lost to collapsing, burning or drowned homes this moment (reported, then reset). */
   toll = 0;
+  // ---- Governance (on a capital) ----
+  gov: Gov = 'council';
+  /** 0 low, 1 normal, 2 high. */
+  tax = 1;
+  stance: Stance = 'defend';
+  openTrade = true;
+  faithPolicy: FaithPolicy = 'ancestral';
+  /** Civic buildings the rulers have ordered, in order (by kind name). */
+  queue: string[] = [];
+  /** When false, only the queue is built (the player decides). */
+  autoBuild = true;
+  /** The treasury. */
+  gold = 30;
+  /** The people's contentment, 0–100. */
+  mood = 60;
+  /** Seconds until the AI reconsiders its policies. */
+  policyT = 30;
   /** Political system (on a capital, from the industrial age). */
   ideology: '' | 'capitalism' | 'socialism' | 'communism' = '';
   /** Economic health: 1 normal, below 1 in a crisis, above 1 in a boom. */
@@ -360,6 +378,7 @@ export class Village {
       if (this.ideology === 'socialism') return 'Cộng hòa Xã hội';
       return this.annexed >= 2 ? 'Liên bang' : 'Cộng hòa';
     }
+    if ((this.gov === 'republic' || this.gov === 'merchant') && this.isCapital) return this.era <= 1 ? 'Thành bang' : 'Cộng hòa';
     if (this.annexed >= 2 && this.era >= 2) return this.culture.id === 'thao_nguyen' ? 'Đế quốc' : 'Đế chế';
     return this.culture.states[this.era];
   }
@@ -501,6 +520,8 @@ export class Sim {
   /** Bombers in flight (simulation state: they strike when they arrive). */
   airstrikes: Airstrike[] = [];
   fleets: Fleet[] = [];
+  /** The people each god guides (a city id; follows its nation), or -1. */
+  chosen = [-1, -1];
   private airId = 1;
   /** Areas whose colours changed hands (visual only: the renderer repaints them and flashes the new banner). */
   repaints: { x: number; y: number; r: number; color: number }[] = [];
@@ -607,6 +628,7 @@ export class Sim {
     this.voyages = [];
     this.airstrikes = [];
     this.fleets = [];
+    this.chosen = [-1, -1];
     this.wars = [];
     this.warFrom = null;
     this.peaceFrom = null;
@@ -996,6 +1018,32 @@ export class Sim {
       case 'godName':
         this.godNames[c.god] = c.name;
         break;
+      case 'choose': {
+        const v = this.villages[c.v];
+        if (!v?.alive) break;
+        this.chosen[c.god] = v.capital.id;
+        const cap = v.capital;
+        cap.autoBuild = true;
+        this.chronicle(cap, `🌟 ${this.godNames[c.god]} chọn ${cap.name} làm dân tộc của mình, dõi theo họ qua dòng lịch sử.`);
+        break;
+      }
+      case 'policy': {
+        const cap = this.villages[c.v]?.capital;
+        if (!cap?.alive || this.peopleOf(c.god) !== cap) break;
+        this.setPolicy(cap, c.key, c.value, true);
+        break;
+      }
+      case 'queue': {
+        const cap = this.villages[c.v]?.capital;
+        if (!cap?.alive || this.peopleOf(c.god) !== cap) break;
+        if (c.add) {
+          if (cap.queue.length < 8) cap.queue.push(c.kind);
+        } else {
+          const k = cap.queue.indexOf(c.kind);
+          if (k >= 0) cap.queue.splice(k, 1);
+        }
+        break;
+      }
     }
   }
 
@@ -1351,7 +1399,8 @@ export class Sim {
 
       v.blessFertile = Math.max(0, v.blessFertile - dt);
       v.blessWar = Math.max(0, v.blessWar - dt);
-      v.birthTimer -= dt * (v.blessFertile > 0 ? 3 : 1) * (1 - 0.7 * v.trauma);
+      const content = v.capital.mood > 75 ? 1.3 : v.capital.mood < 25 ? 0.7 : 1;
+      v.birthTimer -= dt * (v.blessFertile > 0 ? 3 : 1) * (1 - 0.7 * v.trauma) * content;
       // Decline and recovery are part of the chronicle.
       if (v.trauma > 0.5 && !v.slump) {
         v.slump = true;
@@ -1430,12 +1479,14 @@ export class Sim {
       if (v.isCapital) {
         this.armyTick(v, dt);
         this.economyTick(v, dt);
+        this.politicsTick(v, dt);
       }
 
       // Soldiers: about a third of the adults go to war.
       if (v.enemies.size) {
         // A nation massing for an offensive calls up more of its people.
-        const rate = (v.has('barracks') ? 0.5 : v.capital.armyPhase === 'rally' ? 0.45 : 0.35) + (v.capital.ideology === 'communism' ? 0.08 : 0);
+        const cp = v.capital;
+        const rate = ((v.has('barracks') ? 0.5 : cp.armyPhase === 'rally' ? 0.45 : 0.35) + GOVS[cp.gov].army) * (cp.stance === 'peace' ? 0.6 : cp.stance === 'expand' ? 1.15 : 1);
         const want = Math.min(60, Math.ceil(v.adults * rate));
         let have = 0;
         for (const h of this.humans) if (h.village === v.id && h.role === 'soldier') have++;
@@ -1515,7 +1566,7 @@ export class Sim {
     const recovering = 1 - 0.7 * (trauma / cities);
     // Universities, labs and power feed science; the economy and the political system set the pace.
     const science = 1 + 0.12 * Math.min(3, this.nationCount(cap, 'university') + this.nationCount(cap, 'lab') + 0.5 * this.nationCount(cap, 'powerplant'));
-    const system = cap.ideology === 'capitalism' ? 1.12 : cap.ideology === 'communism' ? 0.92 : 1;
+    const system = GOVS[cap.gov].tech * (cap.faithPolicy === 'secular' ? 1.08 : 1) * (cap.mood > 75 ? 1.06 : cap.mood < 25 ? 0.85 : 1);
     v.tech += dt * 0.09 * Math.sqrt(pop) * ERAS[cap.era].pace * v.culture.traits.tech * surplus * faith * learning * pace * recovering * science * system * cap.econ;
     while (v.era < MAX_ERA && v.tech >= ERAS[v.era + 1].tech) {
       const before = v.name;
@@ -1593,7 +1644,7 @@ export class Sim {
     }
     if (v.wishCooldown > 0 || this.wishes.some((x) => x.village === v.id)) return;
     v.wishCooldown = 240 + (100 - v.faith) * 2 + rand() * 160;
-    if (v.faith < 5) return;
+    if (v.faith < 5 || v.capital.faithPolicy === 'secular') return;
     // Across the whole world: at most 3 waiting, and a pause between any two prayers.
     if (this.wishes.length >= 3 || this.world.time < this.nextWishAt) return;
     this.nextWishAt = this.world.time + 120 + rand() * 90;
@@ -1944,8 +1995,134 @@ export class Sim {
     else if (cap.partners.size >= 2) pick = r < 0.6 ? 'capitalism' : r < 0.85 ? 'socialism' : 'communism';
     else pick = r < 0.4 ? 'capitalism' : r < 0.75 ? 'socialism' : 'communism';
     cap.ideology = pick;
+    if (pick) cap.gov = pick;
     const what = { capitalism: '💰 kinh tế thị trường tư bản chủ nghĩa', socialism: '🌹 con đường xã hội chủ nghĩa', communism: '☭ chủ nghĩa cộng sản' }[pick as 'capitalism'];
     this.chronicle(cap, `🏛️ Bước vào thời công nghiệp, ${cap.base} chọn ${what}. Từ nay gọi là ${cap.name}.`);
+  }
+
+  /** The people a god guides (its current capital), or null. */
+  peopleOf(god: number): Village | null {
+    const id = this.chosen[god];
+    const v = id >= 0 ? this.villages[id] : null;
+    if (!v) return null;
+    const cap = v.capital;
+    if (!cap.alive) return null;
+    if (cap.id !== id) this.chosen[god] = cap.id; // the seat moved, or they were absorbed
+    return cap;
+  }
+  /** Is this nation guided by a god (so the AI leaves its policies alone)? */
+  guided(cap: Village) {
+    return this.chosen.some((id, g) => id >= 0 && this.peopleOf(g) === cap);
+  }
+
+  private setPolicy(cap: Village, key: string, value: string | number | boolean, byGod: boolean) {
+    const said = (t: string) => byGod && this.chronicle(cap, t);
+    switch (key) {
+      case 'gov': {
+        const g = value as Gov;
+        if (!GOVS[g] || !govsFor(cap.era).includes(g) || cap.gov === g) return;
+        cap.gov = g;
+        if (g === 'capitalism' || g === 'socialism' || g === 'communism') cap.ideology = g;
+        // Changing the system shakes the realm for a while.
+        cap.mood = Math.max(0, cap.mood - 12);
+        said(`📜 ${cap.base} chuyển sang chính thể ${GOVS[g].icon} ${GOVS[g].name}. Từ nay gọi là ${cap.name}.`);
+        return;
+      }
+      case 'tax':
+        cap.tax = Math.max(0, Math.min(2, Number(value)));
+        said(`💰 ${cap.name} đặt mức thuế ${TAXES[cap.tax].name.toLowerCase()}.`);
+        return;
+      case 'stance':
+        cap.stance = value as Stance;
+        return;
+      case 'trade':
+        cap.openTrade = !!value;
+        if (!cap.openTrade) for (const p of [...cap.partners]) {
+          cap.partners.delete(p);
+          this.villages[p]?.partners.delete(cap.id);
+        }
+        said(cap.openTrade ? `⛵ ${cap.name} mở cửa giao thương với thiên hạ.` : `🚪 ${cap.name} đóng cửa biên giới, bế quan tỏa cảng.`);
+        return;
+      case 'faith': {
+        const f = value as FaithPolicy;
+        if (!FAITHS[f] || cap.era < FAITHS[f].from) return;
+        cap.faithPolicy = f;
+        said(`🛐 ${cap.name} chọn ${FAITHS[f].name.toLowerCase()} làm quốc giáo.`);
+        return;
+      }
+      case 'auto':
+        cap.autoBuild = !!value;
+        return;
+    }
+  }
+
+  /**
+   * The life of a realm: taxes fill the treasury, contentment rises and falls with food, taxes, war
+   * and faith; discontent breeds unrest. Unguided nations set their own policies.
+   */
+  private politicsTick(cap: Village, dt: number) {
+    // The system must suit the age; when the age outgrows it, the realm moves on.
+    if (!govsFor(cap.era).includes(cap.gov)) {
+      const options = govsFor(cap.era);
+      const pick = cap.era >= 4 && cap.ideology && options.includes(cap.ideology) ? cap.ideology : this.aiGov(cap, options);
+      const before = GOVS[cap.gov].name;
+      cap.gov = pick;
+      if (pick === 'capitalism' || pick === 'socialism' || pick === 'communism') cap.ideology = pick;
+      this.chronicle(cap, `📜 Thời thế đổi thay: ${before} nhường chỗ cho ${GOVS[pick].icon} ${GOVS[pick].name} ở ${cap.base}.`);
+      if (this.guided(cap)) this.toasts.push({ icon: '📜', title: 'Chính thể mới', text: `${GOVS[pick].name} — có thể đổi trong thẻ 👑` });
+    }
+    const cities = this.citiesOf(cap);
+    const pop = cities.reduce((n, c) => n + c.pop, 0);
+    const gov = GOVS[cap.gov];
+    cap.gold += dt * (0.4 + pop * 0.03) * TAXES[cap.tax].income * gov.tax * cap.econ * (cap.mood < 25 ? 0.6 : 1);
+
+    // State religion: the creator's cult grows its faith; a secular state lets faith fade.
+    for (const c of cities) {
+      if (cap.faithPolicy === 'god' && c.homeGod >= 0) c.addFaith(c.homeGod, dt * 0.06);
+      else if (cap.faithPolicy === 'secular') for (let g = 0; g < c.faiths.length; g++) c.addFaith(g, -dt * 0.03);
+    }
+    const fed = cities.filter((c) => c.food >= c.pop * 0.8).length / (cities.length || 1);
+    const trauma = cities.reduce((n, c) => n + c.trauma, 0) / (cities.length || 1);
+    const faithful = cap.faithPolicy !== 'secular' && cap.faith > 50 ? 5 : 0;
+    const target =
+      55 + 20 * (fed - 0.5) + TAXES[cap.tax].mood + gov.mood + faithful - (cap.enemies.size ? 10 : 0) - trauma * 30 - (cap.econT > 0 ? 18 : cap.econT < 0 ? -6 : 0) + Math.min(9, cap.pacts.size * 3);
+    cap.mood += (Math.max(0, Math.min(100, target)) - cap.mood) * Math.min(1, dt * 0.02);
+
+    // Unrest: provinces break away, or the regime falls.
+    if (cap.mood < 22 && rand() < dt * 0.003) {
+      const far = cities.filter((c) => c !== cap).sort((a, b) => Math.hypot(b.cx - cap.cx, b.cy - cap.cy) - Math.hypot(a.cx - cap.cx, a.cy - cap.cy))[0];
+      if (far && rand() < 0.6) {
+        this.secede(far, 'vì lòng dân oán thán triều đình');
+      } else {
+        const options = govsFor(cap.era).filter((g) => g !== cap.gov);
+        if (options.length) {
+          const before = cap.name;
+          const g = options[Math.floor(rand() * options.length)];
+          cap.gov = g;
+          if (g === 'capitalism' || g === 'socialism' || g === 'communism') cap.ideology = g;
+          cap.mood = 50;
+          cap.tax = 1;
+          this.chronicle(cap, `✊ Dân chúng nổi dậy lật đổ ${before}! Chính quyền mới: ${GOVS[g].icon} ${GOVS[g].name}.`);
+          this.toasts.push({ icon: '✊', title: 'Nổi dậy!', text: `${before} → ${cap.name}` });
+        }
+      }
+    }
+
+    // Unguided nations govern themselves.
+    if (this.guided(cap)) return;
+    cap.policyT -= dt;
+    if (cap.policyT > 0) return;
+    cap.policyT = 40 + rand() * 40;
+    cap.tax = cap.mood < 35 ? 0 : cap.gold < civicGold(cap.era) * 2 ? 2 : 1;
+    const ag = cap.culture.traits.aggression;
+    cap.stance = ag >= 1.3 ? 'expand' : ag <= 0.8 ? 'peace' : 'defend';
+    if (cap.era >= 4 && cap.faithPolicy !== 'secular' && cap.faith < 25 && rand() < 0.3) cap.faithPolicy = 'secular';
+  }
+
+  private aiGov(cap: Village, options: Gov[]): Gov {
+    const t = cap.culture.traits;
+    const score = (g: Gov) => GOVS[g].tech * t.tech + GOVS[g].army * 4 * t.aggression + GOVS[g].mood * 0.02 + rand() * 0.3;
+    return options.slice().sort((a, b) => score(b) - score(a))[0];
   }
 
   /**
@@ -1968,6 +2145,7 @@ export class Sim {
         const before = cap.name;
         const next: Village['ideology'] = cap.ideology === 'capitalism' ? (rand() < 0.5 ? 'socialism' : 'communism') : cap.ideology === 'communism' ? 'capitalism' : rand() < 0.5 ? 'capitalism' : 'communism';
         cap.ideology = next;
+        if (next) cap.gov = next;
         cap.econT = Math.min(cap.econT, 10);
         this.chronicle(cap, `✊ Cách mạng nổ ra giữa khủng hoảng! ${before} sụp đổ, ${cap.name} ra đời.`);
         this.toasts.push({ icon: '✊', title: 'Cách mạng!', text: `${before} → ${cap.name}` });
@@ -2230,7 +2408,7 @@ export class Sim {
         // Trade between nations at peace whose markets are within reach.
         const pact = a.pacts.has(b.id);
         // Treaty partners trade over any distance, markets or not.
-        const trading = !atWar && (pact || (d < 120 && this.nationHas(a, 'market') && this.nationHas(b, 'market')));
+        const trading = !atWar && a.openTrade && b.openTrade && (pact || (d < 120 && this.nationHas(a, 'market') && this.nationHas(b, 'market')));
         if (trading && !a.partners.has(b.id)) {
           a.partners.add(b.id);
           b.partners.add(a.id);
@@ -2321,7 +2499,7 @@ export class Sim {
         delta += rand() - 0.5;
         const op = Math.max(-100, Math.min(100, (a.opinion.get(b.id) ?? 0) + delta));
         a.opinion.set(b.id, op);
-        if (op < -60 && border && !a.enemies.has(b.id) && !a.allies.has(b.id) && !a.pacts.has(b.id) && a.enemies.size === 0 && popA >= 8 && this.nationPop(b) >= 3) {
+        if (op < (a.stance === 'expand' ? -40 : -60) && a.stance !== 'peace' && border && !a.enemies.has(b.id) && !a.allies.has(b.id) && !a.pacts.has(b.id) && a.enemies.size === 0 && popA >= 8 && this.nationPop(b) >= 3) {
           const why =
             a.patron >= 0 && b.patron >= 0 && a.patron !== b.patron
               ? `nhân danh ${this.godNames[a.patron]} — một cuộc thánh chiến`
@@ -3626,6 +3804,12 @@ export class Sim {
     for (const o of this.humans) if (o.village < 0 && Math.hypot(o.x - h.x, o.y - h.y) < 5 && o.god >= 0) votes[o.god]++;
     v.homeGod = votes[0] + votes[1] ? (votes[1] > votes[0] ? 1 : 0) : w.layout === 'halves' ? (x < W / 2 ? 0 : 1) : -1;
     if (v.homeGod >= 0) v.faiths[v.homeGod] += 10;
+    // The first people a god's own creations found becomes the people that god follows.
+    const maker = votes[0] + votes[1] ? (votes[1] > votes[0] ? 1 : 0) : -1;
+    if (maker >= 0 && this.chosen[maker] < 0 && !nationCity) {
+      this.chosen[maker] = id;
+      this.toasts.push({ icon: '🌟', title: 'Dân tộc của bạn', text: `${base} — mở thẻ 👑 để dẫn dắt họ` });
+    }
     v.founder = h.culture === culture.id ? h.name : pick(culture.names);
     v.foundYear = this.year;
     v.parentName = h.origin;
@@ -3752,11 +3936,27 @@ export class Sim {
   }
 
   /** The next civic building this nation lacks, if any. */
+  /**
+   * The next civic building this city should raise. Buildings cost gold from the treasury. A guided
+   * people builds what its god ordered (the queue); others — and guided ones on 'auto' — build what
+   * they need, one of a kind per city unless the city is large.
+   */
   private missingSpecial(v: Village): Kind | null {
+    const cap = v.capital;
+    if (cap.gold < civicGold(v.era)) return null;
+    const ordered = cap.queue.find((k) => {
+      const s = SPECIALS.find((x) => x.kind === k);
+      return s && v.era >= s.era && !(k === 'dock' && !v.jobs.fish.length);
+    });
+    if (ordered) return ordered as Kind;
+    if (this.guided(cap) && !cap.autoBuild) return null;
     for (const s of SPECIALS) {
       if (v.era < s.era) continue;
       if (s.kind === 'dock' && (!v.jobs.fish.length || v.has('dock'))) continue;
-      const want = s.per ? 1 + Math.floor(v.pop / s.per) : 1;
+      // Needs, not whims: no barracks in peacetime unless expansionist, no market without trade in mind.
+      if (s.kind === 'barracks' && !v.enemies.size && cap.stance !== 'expand') continue;
+      if (s.kind === 'market' && !cap.openTrade) continue;
+      const want = s.per ? 1 + Math.floor(v.pop / (s.per * 1.8)) : 1;
       if (v.count(s.kind) < want) return s.kind;
     }
     return null;
@@ -3998,6 +4198,10 @@ export class Sim {
             if (kind === 'house') v.houses.add(t);
             else {
               v.buildings.set(t, kindIndex(kind));
+              const cap = v.capital;
+              cap.gold = Math.max(0, cap.gold - civicGold(v.era));
+              const q = cap.queue.indexOf(kind);
+              if (q >= 0) cap.queue.splice(q, 1);
               this.chronicle(v, `🏗️ ${v.name} xây ${SPECIAL_LABEL[kind]}.`, false);
             }
             v.wood -= cost;
@@ -4200,6 +4404,7 @@ export class Sim {
         voyages: this.voyages,
         airstrikes: this.airstrikes,
         fleets: this.fleets,
+        chosen: this.chosen,
         airId: this.airId,
         nextId: this.nextId,
         wishId: this.wishId,
@@ -4279,7 +4484,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, gov: 'council', tax: 1, stance: 'defend', openTrade: true, faithPolicy: 'ancestral', queue: [], autoBuild: true, gold: 30, mood: 60, policyT: 30, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });
@@ -4315,6 +4520,7 @@ export class Sim {
     this.voyages = d.voyages ?? [];
     this.airstrikes = d.airstrikes ?? [];
     this.fleets = d.fleets ?? [];
+    this.chosen = d.chosen ?? [-1, -1];
     this.airId = d.airId ?? 1;
     this.nextId = d.nextId;
     this.wishId = d.wishId;

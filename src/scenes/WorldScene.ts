@@ -842,8 +842,11 @@ export class WorldScene extends Phaser.Scene {
       g.fillStyle(0xe8d8c0, 1);
       g.fillRect(px + (f > 0 ? -3 : 2), py - 4, 1, 1);
       g.fillStyle(0x5a3a1a, 1);
-      g.fillRect(px - 3, py - 2, 1, step ? 1 : 2);
-      g.fillRect(px + 2, py - 2, 1, step ? 2 : 1);
+      // Four legs in a diagonal gait.
+      for (const [lx, phase] of [[-3, 0], [-2, 1], [1, 1], [2, 0]]) g.fillRect(px + lx, py - 2, 1, (step ? phase : 1 - phase) ? 1 : 2);
+      g.fillStyle(0xf0e8d8, 0.8);
+      g.fillRect(px - 1, py - 4, 1, 1);
+      g.fillRect(px + 1, py - 4, 1, 1);
       g.fillStyle(0xd8c090, 1);
       g.fillRect(px + (f > 0 ? 2 : -3), py - 8, 1, 2);
       g.fillRect(px + (f > 0 ? 4 : -5), py - 8, 1, 1);
@@ -854,8 +857,9 @@ export class WorldScene extends Phaser.Scene {
       g.fillStyle(0x5a5a64, 1);
       g.fillRect(px + (f > 0 ? 3 : -4), py - 6, 1, 1);
       g.fillRect(px + (f > 0 ? -4 : 4), py - 5, 1, 2);
-      g.fillRect(px - 3, py - 2, 1, step ? 1 : 2);
-      g.fillRect(px + 2, py - 2, 1, step ? 2 : 1);
+      for (const [lx, phase] of [[-3, 0], [-2, 1], [2, 1], [3, 0]]) g.fillRect(px + lx, py - 2, 1, (step ? phase : 1 - phase) ? 1 : 2);
+      g.fillStyle(0xd8d8e0, 1);
+      g.fillRect(px + (f > 0 ? 5 : -6), py - 4, 1, 1); // snout
       if (a.prey) {
         g.fillStyle(0xff3030, 1);
         g.fillRect(px + (f > 0 ? 5 : -5), py - 5, 1, 1);
@@ -907,28 +911,103 @@ export class WorldScene extends Phaser.Scene {
       g.fillEllipse(px + 0.5, py, 7, 2);
     }
 
-    // Hair (or helmet) + face
-    g.fillStyle(soldier && era >= 2 ? (era >= 5 ? 0x4a5a3a : 0x9a9aa0) : hair, 1);
-    g.fillRect(px - 1, py + top, 3, 1);
+    // --- Who they are: clothes of their age and people, hair by sex and years ---
+    const culture = v?.culture.id ?? '';
+    const east = culture === 'lua_nuoc' || culture === 'hoa_ha' || culture === 'dao_xa';
+    const female = h.id % 2 === 1;
+    const old = h.age > 50 * 6;
+    const outfit = (h.id * 2654435761) >>> 0;
+    const CIVVY = [0x3a6ea5, 0xc0392b, 0xe8e8e8, 0x2e8b57, 0xf0c040, 0x8e44ad, 0x2a2a2a, 0xe07a30];
+    let top_c: number;
+    let legs = PANTS;
+    if (soldier) top_c = era >= 4 ? 0x4a5a3a : shirt;
+    else if (era === 0) top_c = 0x8a6a42; // hides
+    else if (era <= 2) top_c = (outfit & 1 ? shirt : 0xd8c8a0);
+    else if (era === 3) top_c = (outfit & 3) === 0 ? shirt : east ? 0x3a3a48 : 0x6a4a3a;
+    else if (era === 4) top_c = (outfit & 1 ? 0x4a4a58 : 0x6a5a48);
+    else if (era === 5) top_c = CIVVY[outfit % CIVVY.length];
+    else top_c = 0xdfe6ee;
+    if (era === 0) legs = skin;
+    else if (era === 5) legs = outfit & 4 ? 0x3a5a8a : 0x2a2a30;
+    else if (era === 6) legs = 0xb8c4d0;
+    const hairCol = old ? 0xd8d8d8 : hair;
+
+    // Head: hair or helmet, face, and the hats of the age.
+    if (soldier && era >= 1) {
+      g.fillStyle(era >= 5 ? 0x4a5a3a : era >= 3 ? 0x9a9aa0 : 0x8a6a3a, 1);
+      g.fillRect(px - 1, py + top - 1, 3, 2);
+    } else {
+      g.fillStyle(hairCol, 1);
+      g.fillRect(px - 1, py + top, 3, 1);
+      if (female && !child) g.fillRect(px - 2, py + top + 1, 1, 3); // long hair
+    }
     g.fillStyle(skin, 1);
     g.fillRect(px - 1, py + top + 1, 3, 2);
     g.fillStyle(0x1a1a1a, 1);
-    g.fillRect(px, py + top + 1, 1, 1);
+    g.fillRect(px + (h.tx >= h.x ? 1 : 0), py + top + 1, 1, 1);
+    if (!soldier && !child) {
+      if (era === 3 && east && outfit % 3 === 0) {
+        // nón lá
+        g.fillStyle(0xe8d8a0, 1);
+        g.fillRect(px - 2, py + top - 1, 5, 1);
+        g.fillRect(px - 1, py + top - 2, 3, 1);
+        g.fillRect(px, py + top - 3, 1, 1);
+      } else if (era === 3 && culture === 'thao_nguyen') {
+        g.fillStyle(0x8a6a4a, 1);
+        g.fillRect(px - 1, py + top - 2, 3, 2);
+      } else if (era === 4 && outfit % 3 === 0) {
+        g.fillStyle(0x2a2a2a, 1); // bowler
+        g.fillRect(px - 2, py + top - 1, 5, 1);
+        g.fillRect(px - 1, py + top - 2, 3, 1);
+      }
+    }
 
     if (!swimming) {
       const bodyY = py + top + 3;
       const bodyH = child ? 2 : 3;
-      g.fillStyle(soldier && era >= 4 ? 0x4a5a3a : shirt, 1);
+      g.fillStyle(top_c, 1);
       g.fillRect(px - 1, bodyY, 3, bodyH);
+      // Long robes (medieval women, eastern dress) cover the legs.
+      const robe = !soldier && !child && ((era === 3 && female) || (era <= 2 && era >= 1 && female && east));
+      if (era === 6 && !soldier) {
+        g.fillStyle(0x7af0ff, 0.9);
+        g.fillRect(px - 1, bodyY + 1, 3, 1);
+      }
+      // Arms, with the tool of the trade when at work.
+      const working = !walking && !sitting && !soldier;
+      const swing = Math.floor(t / 180 + h.id) % 2 === 0;
       g.fillStyle(skin, 1);
       g.fillRect(px - 2, bodyY + (walking && stepA ? 1 : 0), 1, 2);
-      g.fillRect(px + 2, bodyY + (walking && !stepA ? 1 : 0), 1, 2);
+      g.fillRect(px + 2, bodyY + (walking && !stepA ? 1 : 0) - (working && swing ? 1 : 0), 1, 2);
+      if (working) {
+        const hx = px + 3;
+        const hy = bodyY - (swing ? 2 : 0);
+        if (h.action === 'chop') {
+          g.fillStyle(0x7a5230, 1);
+          g.fillRect(hx, hy, 1, 4);
+          g.fillStyle(era >= 1 ? 0xb0b0b8 : 0x8a8a80, 1);
+          g.fillRect(hx, hy, 2, 1);
+        } else if (h.action === 'farm' || h.action === 'harvest') {
+          g.fillStyle(0x7a5230, 1);
+          g.fillRect(hx, hy, 1, 5);
+          g.fillStyle(0x9a9a9a, 1);
+          g.fillRect(hx - (swing ? 0 : 1), hy + 4, 2, 1);
+        } else if (h.action === 'build') {
+          g.fillStyle(0x6a4a2a, 1);
+          g.fillRect(hx, hy + 1, 1, 3);
+          g.fillStyle(0x7a7a82, 1);
+          g.fillRect(hx - 1, hy, 3, 1);
+        }
+      }
       if (!sitting) {
-        g.fillStyle(PANTS, 1);
+        g.fillStyle(robe ? top_c : legs, 1);
         const legY = bodyY + bodyH;
         const legH = py - legY;
-        g.fillRect(px - 1, legY, 1, stepA ? legH - 1 : legH);
-        g.fillRect(px + 1, legY, 1, walking && !stepA ? legH - 1 : legH);
+        if (robe) g.fillRect(px - 1, legY, 3, legH);
+        else {
+          g.fillRect(px - 1, legY, 1, stepA ? legH - 1 : legH);
+          g.fillRect(px + 1, legY, 1, walking && !stepA ? legH - 1 : legH);
+        }
       }
       if (soldier) this.drawWeapon(g, px, bodyY, era, shirt);
       if (h.action === 'hunt' && !soldier) {
@@ -936,6 +1015,11 @@ export class WorldScene extends Phaser.Scene {
         g.fillRect(px + 3, bodyY - 4, 1, 7);
         g.fillStyle(0xaaaaaa, 1);
         g.fillRect(px + 3, bodyY - 5, 1, 1);
+      }
+      // A faint band in the nation's colour so a crowd still reads as its people.
+      if (!soldier && era !== 1 && era !== 2) {
+        g.fillStyle(shirt, 0.9);
+        g.fillRect(px - 1, bodyY + bodyH - 1, 3, 1);
       }
     }
 
@@ -1147,6 +1231,31 @@ export class WorldScene extends Phaser.Scene {
       } else d.y += fall * 0.5;
       if (d.y > 1) d.y -= 1;
       d.x = ((d.x % 1) + 1) % 1;
+    }
+
+    // Glints of light on the water, and raindrops splashing on the ground (when close enough to see).
+    if (cam.zoom >= 0.7) {
+      const slot = Math.floor(this.time.now / 400);
+      for (let k = 0; k < 90; k++) {
+        const hsh = Math.sin(k * 12.9898 + slot * 78.233) * 43758.5453;
+        const fx = hsh - Math.floor(hsh);
+        const hsh2 = Math.sin(k * 39.346 + slot * 11.135) * 24634.6345;
+        const fy = hsh2 - Math.floor(hsh2);
+        const x = view.x + fx * view.width;
+        const y = view.y + fy * view.height;
+        const cx2 = (x / CELL) | 0;
+        const cy2 = (y / CELL) | 0;
+        if (cx2 < 0 || cy2 < 0 || cx2 >= W || cy2 >= H) continue;
+        const i = cy2 * W + cx2;
+        const life = (this.time.now % 400) / 400;
+        if (w.isWater(i) && !w.isIce(i) && !w.road[i]) {
+          g.fillStyle(0xffffff, 0.35 * Math.sin(life * Math.PI));
+          g.fillRect(x, y, 4 * px * (0.5 + life), px);
+        } else if (settings.particles && (w.weatherXY(cx2, cy2) === 'rain' || w.weatherXY(cx2, cy2) === 'storm')) {
+          g.lineStyle(px, 0xcfe4ff, 0.6 * (1 - life));
+          g.strokeEllipse(x, y, (2 + life * 6) * px, (1 + life * 2) * px);
+        }
+      }
     }
 
     // Rocket launches from spaceports.

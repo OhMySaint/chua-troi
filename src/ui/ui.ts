@@ -461,6 +461,21 @@ function warPicker(v: Village) {
     .join('')}</select><button data-war="${v.id}">⚔️ Tuyên chiến</button></span>`;
 }
 
+/** Three small line charts of the realm over time: people, contentment, treasury. */
+function trendChart(trend: number[][]) {
+  if (trend.length < 3) return '';
+  const W2 = 260;
+  const H2 = 34;
+  const line = (k: number, color: string, label: string, fixed?: number) => {
+    const vals = trend.map((t) => t[k]);
+    const max = fixed ?? Math.max(1, ...vals);
+    const pts = vals.map((v, i) => `${((i / (vals.length - 1)) * W2).toFixed(1)},${(H2 - (v / max) * (H2 - 3) - 1).toFixed(1)}`).join(' ');
+    const last = vals[vals.length - 1];
+    return `<div class="trend"><span style="color:${color}">${label} ${k === 0 ? formatPop(last) : last}</span><svg viewBox="0 0 ${W2} ${H2}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg></div>`;
+  };
+  return `<div class="trends">${line(0, '#7ab0ff', '👥 Dân số')}${line(1, '#5ad66a', '😊 Lòng dân', 100)}${line(2, '#e0b84a', '💰 Ngân khố')}</div>`;
+}
+
 /** The people you guide: their realm at a glance, and the levers of government. */
 function peopleTab() {
   const cap = sim.peopleOf(sim.me);
@@ -490,6 +505,7 @@ function peopleTab() {
     <div class="muted">${esc(cap.culture.name)}${cap.ruler ? ` · ${esc(cap.ruler)}` : ''} · ${ERAS[cap.era].name}</div>
     <div>👥 ${formatPop(people)} dân · 🏘️ ${cities.length} thành · 💰 ${Math.floor(cap.gold)} vàng</div>
     ${bar(`😊 Lòng dân ${Math.round(cap.mood)}`, cap.mood / 100, moodColor)}
+    ${trendChart(cap.trend)}
     ${cap.econT > 0 ? '<div class="war">📉 Đang khủng hoảng kinh tế</div>' : cap.econT < 0 ? '<div>📈 Kinh tế đang tăng trưởng</div>' : ''}
     ${cap.enemies.size ? `<div class="war">⚔️ Chiến tranh với ${[...cap.enemies].map((e) => esc(sim.villages[e]?.name ?? '')).join(', ')}</div>` : ''}
 

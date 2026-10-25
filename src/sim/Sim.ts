@@ -353,6 +353,9 @@ export class Village {
   gold = 30;
   /** The people's contentment, 0–100. */
   mood = 60;
+  /** Samples over time for the charts: [people, mood, gold] every TREND seconds. */
+  trend: number[][] = [];
+  trendT = 0;
   /** Seconds until the AI reconsiders its policies. */
   policyT = 30;
   /** Political system (on a capital, from the industrial age). */
@@ -2241,6 +2244,13 @@ export class Sim {
           this.toasts.push({ icon: '✊', title: 'Nổi dậy!', text: `${before} → ${cap.name}` });
         }
       }
+    }
+
+    cap.trendT -= dt;
+    if (cap.trendT <= 0) {
+      cap.trendT = 10;
+      cap.trend.push([Math.round(cities.reduce((n, c) => n + c.people, 0)), Math.round(cap.mood), Math.round(cap.gold)]);
+      if (cap.trend.length > 120) cap.trend.shift();
     }
 
     // Unguided nations govern themselves.
@@ -4633,7 +4643,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, sick: 0, immuneT: 0, plague: '', pollution: 0, droughtT: 0, dike: false, sturdyHomes: false, irrigation: false, gov: 'council', tax: 1, stance: 'defend', openTrade: true, faithPolicy: 'ancestral', queue: [], autoBuild: true, gold: 30, mood: 60, policyT: 30, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, sick: 0, immuneT: 0, plague: '', pollution: 0, droughtT: 0, dike: false, sturdyHomes: false, irrigation: false, gov: 'council', tax: 1, stance: 'defend', openTrade: true, faithPolicy: 'ancestral', queue: [], autoBuild: true, gold: 30, mood: 60, policyT: 30, trend: [], trendT: 0, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

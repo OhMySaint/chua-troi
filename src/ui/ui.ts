@@ -13,6 +13,7 @@ import { FAITHS, type FaithPolicy, GOVS, STANCES, type Stance, TAXES, civicGold,
 import { SPECIAL_KINDS } from '../art/buildings';
 import { tribeStory } from '../sim/story';
 import { BASE_SEA, H, W, WEATHER_LABEL, YEAR, type Weather } from '../world/constants';
+import { SEASONS } from '../world/World';
 
 interface ToolDef {
   id: Tool;
@@ -316,7 +317,7 @@ function refreshPanel() {
   const here = Math.max(0, Math.min(W * H - 1, Math.round(ui.view.y) * W + Math.round(ui.view.x)));
 
   $('#stats').innerHTML = `
-    <div class="year">📅 Năm ${sim.year} · ${tod} · ${ERAS[topEra].icon} ${ERAS[topEra].name}</div>
+    <div class="year">📅 Năm ${sim.year} · ${SEASONS[sim.world.season()].icon} ${SEASONS[sim.world.season()].name} · ${tod} · ${ERAS[topEra].icon} ${ERAS[topEra].name}</div>
     <div>Tại đây: ${WEATHER_LABEL[w.weatherAt(here)]} · 🌡️ ${w.tempAt(here).toFixed(0)}°C${w.autoWeather ? ' · 🔄' : ''} · 🌊 ${sea > 0 ? '+' : ''}${sea}</div>
     <div>👥 ${formatPop(alive.reduce((n, v) => n + v.people, 0))} dân <span class="muted">(${sim.humans.length} trên bản đồ)</span> · 🏘️ ${alive.length} quốc gia · ⚔️ ${sim.wars.length}</div>
     <div>🦌 ${sim.animals.count('deer')} · 🐺 ${sim.animals.count('wolf')} · ${believers} nước thờ thần</div>
@@ -387,6 +388,7 @@ function villageCard(v: Village) {
       <div>🏠 ${v.houses.size} nhà · 🌾 ${v.farms.size} ruộng · Kho 🍞 ${Math.floor(v.food)} 🪵 ${v.wood}</div>
       ${nationBlock(v)}
       ${civics(v)}
+      ${environment(v)}
       ${influences(v)}
       ${wars.length ? `<div class="war">⚔️ Đang chiến tranh với ${wars.map((o) => esc(o.name)).join(', ')} · hạ ${v.kills} / mất ${v.losses}</div>` : ''}
       ${bar(next ? `→ ${next.icon}` : 'Đỉnh cao', progress, '#7ab0ff')}
@@ -421,6 +423,17 @@ function nationBlock(v: Village) {
     ${army ? `<br>${army}` : ''}
     ${v.trauma > 0.2 ? `<br>🥀 Tổn thương sau thảm họa: ${Math.round(v.trauma * 100)}%` : ''}
   </div>`;
+}
+
+function environment(v: Village) {
+  const items = [
+    v.sick > 0 ? `<span class="bad">🦠 ${esc(v.plague)} (${Math.round(v.sick * 100)}%)</span>` : '',
+    v.pollution > 0.15 ? `<span class="bad">🏭 Ô nhiễm ${Math.round(v.pollution * 100)}%</span>` : '',
+    v.dike ? '<span>🧱 Đê điều</span>' : '',
+    v.sturdyHomes ? '<span>🏠 Nhà chống động đất</span>' : '',
+    v.irrigation ? '<span>💧 Thủy lợi</span>' : '',
+  ].filter(Boolean);
+  return items.length ? `<div class="tags">${items.join('')}</div>` : '';
 }
 
 function civics(v: Village) {

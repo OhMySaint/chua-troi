@@ -29,6 +29,11 @@ function line(sim: Sim, h: Human): string {
   if (h.hunger > 0.65)
     return era >= 4 ? pick(['Giá thực phẩm đắt quá', 'Siêu thị hết hàng rồi', 'Lương không đủ mua gạo']) : pick(['Đói quá...', 'Kho lúa sắp cạn rồi', 'Bao giờ mới được bữa no?']);
   if (h.warmth < 0.4) return pick(['Lạnh cóng cả người', 'Mùa đông này dài quá', 'Củi đâu hết rồi?']);
+  if (v && v.sick > 0.2) return pick([`${v.plague[0].toUpperCase() + v.plague.slice(1)} lan khắp nơi rồi...`, 'Nhà bên lại có người ốm', 'Phải đun sôi nước mà uống', era >= 4 ? 'Bệnh viện quá tải rồi' : 'Thầy lang bảo phải cách ly']);
+  if (v && v.pollution > 0.4 && Math.random() < 0.5) return pick(['Khói bụi thế này sao thở nổi', 'Sông bẩn quá, cá chết hết', 'Phải trồng thêm cây thôi']);
+  if (sim.world.season() === 3 && Math.random() < 0.25) return pick(['Mùa đông lạnh quá', 'Kho lúa còn đủ không nhỉ?', 'Ngồi bên bếp lửa cho ấm']);
+  if (sim.world.season() === 2 && Math.random() < 0.25) return pick(['Lúa chín vàng đồng rồi!', 'Mùa gặt bận rộn quá', 'Năm nay được mùa']);
+  if (sim.world.season() === 0 && Math.random() < 0.2) return pick(['Xuân về hoa nở khắp nơi', 'Đến mùa gieo hạt rồi']);
   if (v && v.trauma > 0.4) return pick(['Thiên tai tàn phá hết rồi...', 'Phải làm lại từ đầu thôi', 'Bao giờ mới yên ổn đây?']);
   if (v && v.enemies.size) return pick(['Chiến tranh bao giờ mới hết?', 'Con tôi đã ra trận...', 'Nghe nói giặc sắp tới']);
   if (v && v.patron >= 0 && v.faith > 60 && Math.random() < 0.3) return pick([`${sim.deityOf(v)} thật nhân từ!`, 'Mùa này bội thu, tạ ơn thần linh', 'Đền thờ mới đẹp quá']);

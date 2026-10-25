@@ -325,6 +325,19 @@ export class Village {
   siegeT = 0;
   /** People lost to collapsing, burning or drowned homes this moment (reported, then reset). */
   toll = 0;
+  // ---- Environment ----
+  /** Epidemic severity (0 none … 1 raging), and immunity left after one. */
+  sick = 0;
+  immuneT = 0;
+  plague = '';
+  /** Smog and filth from industry, 0..1. */
+  pollution = 0;
+  /** Seconds spent under drought (it teaches irrigation). */
+  droughtT = 0;
+  /** Lessons learned from the land. */
+  dike = false;
+  sturdyHomes = false;
+  irrigation = false;
   // ---- Governance (on a capital) ----
   gov: Gov = 'council';
   /** 0 low, 1 normal, 2 high. */
@@ -1094,7 +1107,9 @@ export class Sim {
     const dt = STEP;
     if (this.stepNo % TICK_STEPS === 0) {
       this.world.people = this.humans.length;
+      const season = this.world.season();
       this.world.tick(TICK);
+      if (this.world.season() !== season && this.world.season() === 3) this.winterReport();
       this.airTick();
       this.handleEvents();
       this.villageTick(TICK);
@@ -1317,6 +1332,8 @@ export class Sim {
     const nations = this.nations();
     this.maxEra = nations.reduce((m, v) => Math.max(m, v.era), 0);
     this.avgEra = nations.length ? nations.reduce((m, v) => m + v.era, 0) / nations.length : 0;
+    w.sturdy.clear();
+    w.irrigated.clear();
     for (const v of this.villages) {
       for (const i of v.houses) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.houses.delete(i);
       for (const i of v.buildings.keys()) if (w.cover[i] !== Cover.HOUSE || w.owner[i] !== v.id) v.buildings.delete(i);
@@ -1394,6 +1411,7 @@ export class Sim {
       this.progress(v, dt);
       this.religionTick(v, dt);
       this.wishTick(v, dt);
+      this.envTick(v, dt);
 
       const center = idx(v.cx, v.cy);
       if (w.localTemp(center) < 0 && !v.inWinter) {
@@ -1421,7 +1439,7 @@ export class Sim {
 
       v.blessFertile = Math.max(0, v.blessFertile - dt);
       v.blessWar = Math.max(0, v.blessWar - dt);
-      const content = v.capital.mood > 75 ? 1.3 : v.capital.mood < 25 ? 0.7 : 1;
+      const content = (v.capital.mood > 75 ? 1.3 : v.capital.mood < 25 ? 0.7 : 1) * (1 - 0.4 * v.pollution) * (1 - 0.5 * v.sick);
       v.birthTimer -= dt * (v.blessFertile > 0 ? 3 : 1) * (1 - 0.7 * v.trauma) * content;
       // Decline and recovery are part of the chronicle.
       if (v.trauma > 0.5 && !v.slump) {
@@ -2022,6 +2040,100 @@ export class Sim {
     this.chronicle(cap, `🏛️ Bước vào thời công nghiệp, ${cap.base} chọn ${what}. Từ nay gọi là ${cap.name}.`);
   }
 
+  /**
+   * How a city lives with its land: it learns from disasters (dikes, sturdy homes, irrigation — and
+   * the customs that come with them), suffers epidemics, and chokes on its own smoke.
+   */
+  private envTick(v: Village, dt: number) {
+    const w = this.world;
+    const center = idx(v.cx, v.cy);
+    // --- Lessons from the land ---
+    if (w.weatherAt(center) === 'drought') v.droughtT += dt;
+    if (!v.irrigation && v.era >= 1 && v.droughtT > 50) {
+      v.irrigation = true;
+      this.chronicle(v, `💧 Sau những mùa hạn khốc liệt, ${v.name} đào kênh dẫn nước vào ruộng. Hằng năm dân làm lễ cầu mưa bên bờ kênh.`);
+    }
+    if (!v.sturdyHomes && v.era >= 1 && v.quakes >= 2) {
+      v.sturdyHomes = true;
+      this.chronicle(v, `🏠 Đã quen với động đất, người ${v.base} dựng nhà khung gỗ mềm dẻo, móng đá vững — ít nhà sập hơn hẳn.`);
+    }
+    if (!v.dike && v.era >= 2 && v.floods >= 3) {
+      v.dike = true;
+      this.chronicle(v, `🧱 Bao lần lũ cuốn, ${v.name} cùng nhau đắp đê ngăn nước. Từ đó có tục cúng thần sông mỗi mùa nước lên.`);
+    }
+    if (v.sturdyHomes) w.sturdy.add(v.id);
+    if (v.irrigation) w.irrigated.add(v.id);
+    // Dikes hold back the sea: low ground inside the city is built up, plot by plot.
+    if (v.dike && rand() < dt * 0.5) {
+      const r = v.radius;
+      const x = Math.round(v.cx + (rand() * 2 - 1) * r);
+      const y = Math.round(v.cy + (rand() * 2 - 1) * r);
+      if (x >= 0 && y >= 0 && x < W && y < H) {
+        const i = idx(x, y);
+        const h = w.height[i];
+        if (h > w.seaLevel - 0.015 && h < w.seaLevel + 0.03) w.height[i] = w.seaLevel + 0.035;
+      }
+    }
+
+    // --- Smoke and filth ---
+    const dirty = v.count('factory') * 0.12 + v.count('powerplant') * 0.18 - v.count('park') * 0.15 - (v.era >= 6 ? 0.3 : 0);
+    const before = v.pollution;
+    v.pollution += (Math.max(0, Math.min(1, dirty)) - v.pollution) * Math.min(1, dt * 0.02);
+    if (before < 0.45 && v.pollution >= 0.45) this.chronicle(v, `🏭 Khói nhà máy phủ kín bầu trời ${v.name}. Người dân ho hen, sông ngòi đen kịt.`);
+    if (before >= 0.3 && v.pollution < 0.3 && v.era >= 5) this.chronicle(v, `🌳 Bầu trời ${v.name} trong xanh trở lại nhờ công viên và năng lượng sạch.`, false);
+
+    // --- Epidemics ---
+    v.immuneT = Math.max(0, v.immuneT - dt);
+    if (v.sick > 0) {
+      const medicine = (v.has('hospital') ? 0.4 : 1) * (v.era >= 4 ? 0.5 : 1);
+      for (const h of this.humans) {
+        if (h.village === v.id && !h.dead && rand() < dt * 0.012 * v.sick * medicine) this.kill(h, `chết vì ${v.plague}`);
+      }
+      v.sick = Math.max(0, v.sick - dt * (v.has('hospital') ? 0.02 : 0.008));
+      // It travels along the roads of trade and to the neighbours.
+      if (rand() < dt * 0.02 * v.sick) {
+        const next = this.villages.find((o) => o.alive && o !== v && o.sick === 0 && o.immuneT === 0 && (v.capital.partners.has(o.nation) || Math.hypot(o.cx - v.cx, o.cy - v.cy) < 60));
+        if (next) this.outbreak(next, v.plague, `lây từ ${v.base}`);
+      }
+      if (v.sick === 0) {
+        v.immuneT = 240;
+        this.chronicle(v, `🌤️ Trận ${v.plague} ở ${v.name} cuối cùng cũng qua đi.`, false);
+      }
+    } else if (v.immuneT === 0 && v.pop >= 12) {
+      const crowded = v.pop > v.cap * 0.9 ? 3 : 1;
+      const chance = 0.00012 * crowded * (v.era >= 1 ? 1.5 : 0.5) * (v.has('hospital') ? 0.25 : 1) * (v.era >= 5 ? 0.3 : 1) * (1 + 2 * v.pollution) * (v.trauma > 0.4 ? 2 : 1);
+      if (rand() < dt * chance) {
+        const name = ['dịch bệnh lạ', 'dịch sốt rét', 'bệnh đậu mùa', 'dịch hạch', 'dịch tả', 'đại dịch cúm', 'virus đột biến'][v.era];
+        this.outbreak(v, name, v.pop > v.cap * 0.9 ? 'vì nhà cửa chật chội' : v.pollution > 0.4 ? 'vì ô nhiễm' : 'không rõ nguyên nhân');
+      }
+    }
+  }
+
+  private outbreak(v: Village, plague: string, why: string) {
+    v.plague = plague;
+    v.sick = 0.6 + rand() * 0.4;
+    this.chronicle(v, `🦠 ${plague[0].toUpperCase() + plague.slice(1)} bùng phát ở ${v.name} (${why}).`);
+    if (this.guided(v.capital) || v.pop > 30) this.toasts.push({ icon: '🦠', title: 'Dịch bệnh!', text: `${plague} ở ${v.base}` });
+  }
+
+  /** As winter comes, the people you guide count their stores. */
+  private winterReport() {
+    for (let g = 0; g < this.chosen.length; g++) {
+      const cap = this.peopleOf(g);
+      if (!cap) continue;
+      const cities = this.citiesOf(cap);
+      const food = cities.reduce((n, c) => n + c.food, 0);
+      const need = cities.reduce((n, c) => n + c.pop * c.foodPerPerson, 0);
+      const text =
+        food >= need * 1.5
+          ? `❄️ Đông về, kho lẫm ${cap.name} đầy ắp — một mùa đông no đủ.`
+          : food >= need
+            ? `❄️ Đông về, ${cap.name} vừa đủ lương ăn qua mùa giá rét.`
+            : `❄️ Đông về mà kho ${cap.name} gần cạn — dân lo một mùa đông đói kém.`;
+      this.chronicle(cap, text, false);
+    }
+  }
+
   /** The people a god guides (its current capital), or null. */
   peopleOf(god: number): Village | null {
     const id = this.chosen[god];
@@ -2106,8 +2218,9 @@ export class Sim {
     const fed = cities.filter((c) => c.food >= c.pop * 0.8).length / (cities.length || 1);
     const trauma = cities.reduce((n, c) => n + c.trauma, 0) / (cities.length || 1);
     const faithful = cap.faithPolicy !== 'secular' && cap.faith > 50 ? 5 : 0;
+    const ills = cities.reduce((n, c) => n + c.pollution * 15 + c.sick * 20, 0) / (cities.length || 1);
     const target =
-      55 + 20 * (fed - 0.5) + TAXES[cap.tax].mood + gov.mood + faithful - (cap.enemies.size ? 10 : 0) - trauma * 30 - (cap.econT > 0 ? 18 : cap.econT < 0 ? -6 : 0) + Math.min(9, cap.pacts.size * 3);
+      55 - ills + 20 * (fed - 0.5) + TAXES[cap.tax].mood + gov.mood + faithful - (cap.enemies.size ? 10 : 0) - trauma * 30 - (cap.econT > 0 ? 18 : cap.econT < 0 ? -6 : 0) + Math.min(9, cap.pacts.size * 3);
     cap.mood += (Math.max(0, Math.min(100, target)) - cap.mood) * Math.min(1, dt * 0.02);
 
     // Unrest: provinces break away, or the regime falls.
@@ -4174,7 +4287,8 @@ export class Sim {
         if (c === Cover.FARM && w.timer[t] >= 0.8) {
           w.timer[t] = 0;
           const civic = v ? (v.has('mill') ? 1.25 : 1) * (v.has('granary') ? 1.1 : 1) * (v.has('factory') ? 1.3 : 1) : 1;
-          const gain = Math.max(1, Math.round(4 * era.yield * (traits?.farm ?? 1) * civic * (1 - 0.5 * (v?.trauma ?? 0))));
+          const autumn = w.season() === 2 ? 1.3 : 1;
+          const gain = Math.max(1, Math.round(4 * era.yield * (traits?.farm ?? 1) * civic * autumn * (1 - 0.5 * (v?.trauma ?? 0))));
           if (h.hunger > 0.5) {
             h.hunger -= 0.5;
             h.carryFood += gain - 1;
@@ -4519,7 +4633,7 @@ export class Sim {
         o.warSet = o.enemies;
         delete o.enemies;
       }
-      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, gov: 'council', tax: 1, stance: 'defend', openTrade: true, faithPolicy: 'ancestral', queue: [], autoBuild: true, gold: 30, mood: 60, policyT: 30, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
+      return Object.assign(Object.create(Village.prototype), { nation: o.id, allies: new Set(), pacts: new Set(), reach: 0, siegeT: 0, toll: 0, rebuilt: 0, armyPath: [], armyPathFor: -1, sick: 0, immuneT: 0, plague: '', pollution: 0, droughtT: 0, dike: false, sturdyHomes: false, irrigation: false, gov: 'council', tax: 1, stance: 'defend', openTrade: true, faithPolicy: 'ancestral', queue: [], autoBuild: true, gold: 30, mood: 60, policyT: 30, ideology: '', econ: 1, econT: 0, ruins: [], navyCd: 40, trauma: 0, warSet: new Set() }, o, {
         culture: cultureById(o.culture as string),
         jobs: o.jobs ?? { ripe: [], farmSites: [], houseSites: [], trees: [], firebreak: [], fish: [] },
       });

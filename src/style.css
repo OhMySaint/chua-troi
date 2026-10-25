@@ -244,3 +244,4 @@ body.at-home #panel-toggle { display: none; }
 .pick { display: block; width: 100%; text-align: left; font: inherit; margin: 4px 0; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: inherit; cursor: pointer; }
 .pick:hover { background: rgba(255,255,255,0.1); }
 .small { font-size: 13px; }
+.tags span.bad { background: rgba(224,74,74,0.25); color: #ffb0a0; }

@@ -24,6 +24,15 @@ export type WorldEvent =
   | { type: 'impact'; x: number; y: number; r: number; kind: 'meteor' | 'quake' | 'volcano' };
 
 const WEATHER_TEMP: Record<Weather, number> = { sun: 24, rain: 14, storm: 10, snow: -10, drought: 36 };
+/** The farming calendar: four seasons of SEASON seconds each. */
+export const SEASON = 45;
+export const SEASONS = [
+  { name: 'Xuân', icon: '🌸', temp: 0, grow: 1.3 },
+  { name: 'Hạ', icon: '☀️', temp: 6, grow: 1 },
+  { name: 'Thu', icon: '🍂', temp: -2, grow: 0.8 },
+  { name: 'Đông', icon: '❄️', temp: -11, grow: 0.05 },
+];
+
 const WEATHERS: Weather[] = ['sun', 'rain', 'storm', 'snow', 'drought'];
 /** Weather is resolved on blocks of WB × WB cells. */
 const WB = 16;
@@ -91,6 +100,10 @@ export class World {
   origin = { x: W / 2, y: H / 2 };
   private landCells: Int32Array = new Int32Array(0);
   private landStart: number[] = [];
+  /** Owners (city ids) whose homes are built to withstand earthquakes. */
+  sturdy = new Set<number>();
+  /** Owners whose fields are irrigated (crops survive drought). */
+  irrigated = new Set<number>();
   /** 1 where the road is a bridge deliberately built over water. */
   bridge = new Uint8Array(N);
   /** Permanent climate offset per cell from latitude (poles are colder). */
@@ -651,6 +664,11 @@ export class World {
     return this.airTemp(i % W, Math.floor(i / W)) - this.chill(i);
   }
 
+  /** Current season (0 spring … 3 winter) and how far into it (0..1). */
+  season() {
+    return Math.floor(this.time / SEASON) % 4;
+  }
+
   /** 0 at midnight, 1 at noon. */
   daylight() {
     const phase = (this.time % this.dayLength) / this.dayLength;
@@ -695,7 +713,7 @@ export class World {
     let sumTemp = 0;
     for (let r = 0; r < RN; r++) {
       const wr = this.regionWeather[r];
-      this.regionTemp[r] += (this.regionTarget[r] - night * 6 - this.regionTemp[r]) * 0.02;
+      this.regionTemp[r] += (this.regionTarget[r] + SEASONS[this.season()].temp - night * 6 - this.regionTemp[r]) * 0.02;
       sumTemp += this.regionTemp[r];
       counts[wr] = (counts[wr] ?? 0) + 1;
     }
@@ -806,7 +824,8 @@ export class World {
           break;
         case Cover.FARM:
           if (this.snow[i] > 0.4) this.timer[i] = 0;
-          else if (temp > 3 && !drought) this.timer[i] = Math.min(1, this.timer[i] + dt * 0.025 * (raining ? 1.8 : 1));
+          else if (temp > 3 && (!drought || this.irrigated.has(this.owner[i])))
+            this.timer[i] = Math.min(1, this.timer[i] + dt * 0.025 * (raining ? 1.8 : 1) * SEASONS[this.season()].grow);
           else if (drought && this.timer[i] > 0.2 && rand() < 0.02) this.timer[i] -= 0.1; // crops wither
           break;
         case Cover.NONE:
@@ -933,7 +952,8 @@ export class World {
       else if (side > 0 && side < 4) this.height[i] = clamp01(this.height[i] + 0.04 * f);
       else if (side < 0 && side > -4) this.height[i] = clamp01(this.height[i] - 0.02 * f);
       const c = this.cover[i];
-      if ((c === Cover.HOUSE && rand() < 0.45 * f + 0.1) || (c === Cover.FOREST && rand() < 0.08 * f)) {
+      const sturdy = c === Cover.HOUSE && this.sturdy.has(this.owner[i]) ? 0.35 : 1;
+      if ((c === Cover.HOUSE && rand() < (0.45 * f + 0.1) * sturdy) || (c === Cover.FOREST && rand() < 0.08 * f)) {
         this.destroy(i, 'quake');
         this.cover[i] = Cover.ASH;
         this.timer[i] = 12;

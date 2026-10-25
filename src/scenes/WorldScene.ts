@@ -1079,6 +1079,20 @@ export class WorldScene extends Phaser.Scene {
     const px = 1 / cam.zoom; // one screen pixel in world units
     const fall = sim.paused ? 0 : dt * Math.max(1, sim.speed * 0.6);
 
+    // The season colours the light: a warm autumn glow, a cold blue winter.
+    const season = w.season();
+    if (season === 2 || season === 3) {
+      g.fillStyle(season === 2 ? 0xd08030 : 0x6080c0, season === 2 ? 0.06 : 0.08);
+      g.fillRect(view.x, view.y, view.width, view.height);
+    }
+    // Smog over polluted cities.
+    for (const v of sim.villages) {
+      if (!v.alive || v.pollution < 0.15) continue;
+      const R = v.radius * CELL * 1.2;
+      if (!this.inView(v.cx * CELL, v.cy * CELL, R)) continue;
+      g.fillStyle(0x6a5a40, v.pollution * 0.25);
+      g.fillCircle(v.cx * CELL, v.cy * CELL - 20, R);
+    }
     // Cloud cover and heat haze: each weather system is a drifting clump of soft cloud.
     for (const sy of w.systems) {
       const a = CLOUD[sy.kind];
